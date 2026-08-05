@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Generated output (assembled pages/PDFs). Keep the folder, ignore contents.
+/output/*
+!/output/.gitkeep
+
+# Dropped-in source snippets are user data, not source code.
+/input/*
+!/input/.gitkeep

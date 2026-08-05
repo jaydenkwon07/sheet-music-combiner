@@ -1,0 +1,20 @@
+[project]
+name = "sheet-music-combiner"
+version = "0.1.0"
+description = "Combine numbered sheet-music snippet images into paginated US-Letter PDFs"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=2.5.1",
+    "pillow>=12.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["scripts"]
+testpaths = ["tests"]
