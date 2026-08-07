@@ -13,3 +13,4 @@ __pycache__/
 # Dropped-in source snippets are user data, not source code.
 /input/*
 !/input/.gitkeep
+CLAUDE.md
