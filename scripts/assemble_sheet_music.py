@@ -36,6 +36,18 @@ EDGE_TB_PX = 45
 # Top/bottom strays must also be thin, so we never erase a real short system.
 THIN_ROW_MAX_PX = 18
 
+# Per-snippet (pre-stack) border-line detection: a leftover screenshot/crop
+# edge shows up as a column or row, right at the true image edge, that is
+# almost solid ink for its entire length. Checked within this many pixels of
+# each edge...
+BORDER_SCAN_PX = 8
+# ...and only whitened if its dark-pixel fraction clears this bar. Calibrated
+# against real scans: the densest real notation (braces, clefs) tops out
+# around 0.6 even at its thickest; only a synthetic border stripe is this
+# solid, so this is safe to catch even when it overlaps other content's span
+# (unlike clean_stray_marks, which only fires on marks isolated from content).
+BORDER_LINE_FRACTION = 0.97
+
 # US Letter at 300 DPI.
 LETTER_WIDTH_PX = 2550
 LETTER_HEIGHT_PX = 3300
@@ -263,6 +275,51 @@ def clean_stray_marks(
     return out, removed
 
 
+def strip_edge_border_lines(
+    rgb: np.ndarray, scan: int = BORDER_SCAN_PX, threshold: float = BORDER_LINE_FRACTION
+) -> tuple[np.ndarray, list[str]]:
+    """Whiten thin, near-solid lines hugging the true edge of a single snippet.
+
+    Catches leftover screenshot/crop borders (e.g. a re-exported snippet that
+    carries a 1-4px solid stripe along one edge) that ``clean_stray_marks``
+    can't see once systems are stacked into a page -- at that point the line
+    only spans one system's row-band, not the whole page, so it no longer
+    reads as an isolated top/bottom-edge group there. Run this per snippet,
+    before stacking, where "solid for its whole length, at the true edge" is
+    unambiguous. Only whitens the specific offending column(s)/row(s), never
+    a whole margin band.
+    """
+    arr = np.asarray(rgb)
+    mask = _to_ink_mask(arr)
+    height, width = mask.shape
+    out = arr.copy()
+    removed: list[str] = []
+
+    left_frac = mask[:, :scan].mean(axis=0)
+    for x in np.flatnonzero(left_frac > threshold):
+        out[:, x] = 255
+        removed.append(f"left border line at col {x}")
+
+    right_frac = mask[:, width - scan :].mean(axis=0)
+    for offset in np.flatnonzero(right_frac > threshold):
+        x = width - scan + offset
+        out[:, x] = 255
+        removed.append(f"right border line at col {x}")
+
+    top_frac = mask[:scan, :].mean(axis=1)
+    for y in np.flatnonzero(top_frac > threshold):
+        out[y, :] = 255
+        removed.append(f"top border line at row {y}")
+
+    bottom_frac = mask[height - scan :, :].mean(axis=1)
+    for offset in np.flatnonzero(bottom_frac > threshold):
+        y = height - scan + offset
+        out[y, :] = 255
+        removed.append(f"bottom border line at row {y}")
+
+    return out, removed
+
+
 def crop_to_content(rgb: np.ndarray) -> np.ndarray:
     """Crop tightly to the bounding box of remaining ink. Blank -> unchanged."""
     arr = np.asarray(rgb)
@@ -397,15 +454,23 @@ def assemble(
     prefix_nfc = unicodedata.normalize("NFC", prefix)
 
     paths = discover_pieces(input_dir, prefix)
-    piece_arrays = [load_rgb(p) for p in paths]
     warnings: list[str] = []
     insert_factor: float | None = None
+
+    piece_arrays = []
+    for i, p in enumerate(paths, start=1):
+        cleaned, removed = strip_edge_border_lines(load_rgb(p))
+        piece_arrays.append(cleaned)
+        for r in removed:
+            warnings.append(f"piece {i} ({p.name}): {r}")
 
     if insert is not None:
         if not at_top and at_position is None:
             raise ValueError("--insert requires --at-top or --at-position")
         ref_gray = piece_arrays[0][..., :3].mean(axis=2)
-        ins_arr = load_rgb(insert)
+        ins_arr, ins_removed = strip_edge_border_lines(load_rgb(insert))
+        for r in ins_removed:
+            warnings.append(f"inserted piece: {r}")
         ins_gray = ins_arr[..., :3].mean(axis=2)
         insert_factor = rescale_factor(
             measure_staff_spacing(ref_gray), measure_staff_spacing(ins_gray)
