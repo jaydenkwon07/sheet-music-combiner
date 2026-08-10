@@ -115,3 +115,20 @@ def test_insert_at_top_rescales_and_adds_piece(tmp_path):
     assert summary["num_pieces"] == 6
     assert summary["counts"] == [6]
     assert summary["insert_factor"] == np.float64(0.5) or abs(summary["insert_factor"] - 0.5) < 0.05
+
+
+def test_identical_inputs_produce_byte_identical_output(tmp_path):
+    """Same snippets in -> same PDF/PNG bytes out, run to run (no timestamps,
+    no randomness)."""
+    src = tmp_path / "in"
+    out1 = tmp_path / "out1"
+    out2 = tmp_path / "out2"
+    src.mkdir()
+    _write_pieces(src, "Song", 11, stray=True)
+
+    summary1 = assemble(src, "Song", out1)
+    summary2 = assemble(src, "Song", out2)
+
+    assert summary1["pdf"].read_bytes() == summary2["pdf"].read_bytes()
+    for p1, p2 in zip(summary1["page_pngs"], summary2["page_pngs"]):
+        assert p1.read_bytes() == p2.read_bytes()

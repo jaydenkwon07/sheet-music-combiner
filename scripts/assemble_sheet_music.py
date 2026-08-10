@@ -11,6 +11,7 @@ import argparse
 import math
 import re
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -405,14 +406,22 @@ def render_letter_page(page: np.ndarray, scale: float, margin: int = DEFAULT_MAR
 
 
 def save_pdf(pages: list[np.ndarray], path: Path | str) -> None:
-    """Combine rendered letter pages into a single RGB, 300-DPI PDF."""
+    """Combine rendered letter pages into a single RGB, 300-DPI PDF.
+
+    Pins creationDate/modDate instead of leaving PIL's default of "now" --
+    otherwise the PDF's bytes (though never its rendered content) would
+    differ between two runs on identical inputs, breaking determinism.
+    """
     images = [Image.fromarray(p).convert("RGB") for p in pages]
+    epoch = time.gmtime(0)
     images[0].save(
         path,
         format="PDF",
         resolution=float(DPI),
         save_all=True,
         append_images=images[1:],
+        creationDate=epoch,
+        modDate=epoch,
     )
 
 
