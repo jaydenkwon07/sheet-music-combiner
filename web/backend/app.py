@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -29,14 +31,32 @@ class AssembleRequest(BaseModel):
     pages: str | None = None
 
 
+def _safe_basename(filename: str | None) -> str | None:
+    if not filename:
+        return None
+    name = Path(filename).name
+    if name in ("", ".", ".."):
+        return None
+    return name
+
+
 @app.post("/api/session")
 async def create_session(files: list[UploadFile] = File(...)):
     store.sweep()
     sid = store.create()
     names: list[str] = []
+    total_bytes = 0
     for f in files:
-        store.save_upload(sid, f.filename, await f.read())
+        if _safe_basename(f.filename) is None:
+            continue
+        data = await f.read()
+        total_bytes += len(data)
+        if total_bytes > settings.max_upload_bytes:
+            raise HTTPException(413, "Upload exceeds maximum allowed size")
+        store.save_upload(sid, f.filename, data)
         names.append(f.filename)
+    if not names:
+        raise HTTPException(422, "No files with a valid filename were uploaded")
     prefix = br.derive_prefix(names)
     if prefix is None:
         raise HTTPException(422, "Could not derive one {prefix}_{n}.png name from the uploads")

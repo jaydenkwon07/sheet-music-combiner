@@ -1,7 +1,10 @@
+import dataclasses
+
 import numpy as np
 from fastapi.testclient import TestClient
 from PIL import Image
 
+import web.backend.app as app_module
 from web.backend.app import app
 
 client = TestClient(app)
@@ -87,3 +90,24 @@ def test_file_endpoint_rejects_traversal():
 def test_unknown_session():
     r = client.post("/api/session/deadbeef/assemble", json={"prefix": "Song"})
     assert r.status_code == 404
+
+
+def test_upload_over_max_bytes_rejected():
+    original = app_module.settings
+    tiny_settings = dataclasses.replace(original, max_upload_bytes=100)
+    app_module.settings = tiny_settings
+    try:
+        files = [
+            ("files", (f"Song_{i}.png", _png_bytes(), "image/png"))
+            for i in (1, 2)
+        ]
+        r = client.post("/api/session", files=files)
+    finally:
+        app_module.settings = original
+    assert r.status_code == 413
+
+
+def test_upload_degenerate_filename_rejected():
+    files = [("files", ("..", _png_bytes(), "image/png"))]
+    r = client.post("/api/session", files=files)
+    assert r.status_code == 422
