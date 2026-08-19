@@ -10,6 +10,13 @@ dependencies = [
     "pillow>=12.3.0",
 ]
 
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "python-multipart>=0.0.12",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
