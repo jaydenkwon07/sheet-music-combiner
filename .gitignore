@@ -14,3 +14,7 @@ __pycache__/
 /input/*
 !/input/.gitkeep
 CLAUDE.md
+
+# Frontend build artifacts / deps
+web/frontend/node_modules
+web/frontend/dist
