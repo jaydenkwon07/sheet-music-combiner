@@ -15,6 +15,10 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [needsSplit, setNeedsSplit] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Bumped on every successful assemble so the preview/PDF URLs change and the
+  // browser refetches — result files are regenerated in place under the same
+  // session/filename, so an unchanged URL would serve a stale cached image.
+  const [runId, setRunId] = useState(0);
 
   async function handleFiles(files: File[]) {
     setError(null); setResult(null); setNeedsSplit(false);
@@ -37,7 +41,7 @@ export function App() {
         margin,
         pages: pages.trim() || undefined,
       });
-      setResult(res); setNeedsSplit(false);
+      setResult(res); setNeedsSplit(false); setRunId((n) => n + 1);
     } catch (e: any) {
       setResult(null);
       if (e.detail?.needs_split) {
@@ -73,8 +77,8 @@ export function App() {
             {result.counts.length} page(s): {result.counts.join(", ")}
           </p>
           <WarningsPanel warnings={result.warnings} />
-          <a className="download" href={apiUrl(result.pdf_url)} download>Download PDF</a>
-          <PagePreview pageUrls={result.page_urls} />
+          <a className="download" href={`${apiUrl(result.pdf_url)}?v=${runId}`} download>Download PDF</a>
+          <PagePreview pageUrls={result.page_urls} version={runId} />
         </>
       )}
     </main>

@@ -27,6 +27,14 @@ describe("App flow", () => {
     expect(screen.getByText(/cleanup note/)).toBeTruthy();
     expect(screen.getByText("Download PDF")).toBeTruthy();
     await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(2));
+
+    // Re-assembling stamps a fresh cache-busting version so the browser
+    // refetches the regenerated previews (same URL, new content otherwise).
+    expect(screen.getAllByRole("img")[0].getAttribute("src")).toContain("?v=1");
+    fireEvent.click(screen.getByText("Assemble"));
+    await waitFor(() =>
+      expect(screen.getAllByRole("img")[0].getAttribute("src")).toContain("?v=2"),
+    );
   });
 
   it("reveals the split prompt on the N=7 needs_split error", async () => {

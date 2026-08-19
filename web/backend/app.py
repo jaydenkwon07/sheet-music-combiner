@@ -104,4 +104,6 @@ def get_file(sid: str, name: str):
     target = (out_dir / name).resolve()
     if out_dir != target.parent or not target.is_file():
         raise HTTPException(404, "not found")
-    return FileResponse(target)
+    # Results are regenerated in place on each re-assemble under the same
+    # session/filename, so the browser must never serve a stale cached copy.
+    return FileResponse(target, headers={"Cache-Control": "no-store"})
