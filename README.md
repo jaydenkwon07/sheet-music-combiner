@@ -81,8 +81,14 @@ for session dirs) on Render. See
 3. **Wire CORS:** back on Render, set `SMC_CORS_ORIGINS` to the Vercel URL
    from step 2 and redeploy the backend service.
 
+The deployed backend has no authentication — anyone with the Render URL can
+upload and assemble, so don't post that URL publicly.
+
 Render's free tier sleeps after ~15 min idle and cold-starts (~30-60s) on
-the next request — expected, not a bug.
+the next request — expected, not a bug. The free instance is also capped at
+512 MB RAM; a very large snippet set can exceed that during PDF assembly, and
+a 502 on assemble means the instance needs upgrading, not that the CLI logic
+is broken.
 
 ## Tests
 

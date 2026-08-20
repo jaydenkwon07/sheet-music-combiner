@@ -7,4 +7,4 @@ services:
     startCommand: uv run uvicorn web.backend.app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: SMC_CORS_ORIGINS
-        value: http://localhost:5173
+        sync: false
