@@ -64,6 +64,26 @@ margin or page split and re-assemble to update the preview, then download the PD
 Uploads live in a temp session, so re-running with new settings doesn't need a
 re-upload.
 
+## Deploying
+
+The web UI splits across two hosts: the frontend (static Vite build) on
+Vercel, the backend (FastAPI + numpy/Pillow, needs a persistent filesystem
+for session dirs) on Render. See
+`docs/superpowers/specs/2026-08-20-vercel-render-deploy-design.md` for why.
+
+1. **Backend on Render:** New → Blueprint → connect this GitHub repo. Render
+   reads `render.yaml` and creates the service. Note the assigned
+   `https://<name>.onrender.com` URL.
+2. **Frontend on Vercel:** New Project → import this GitHub repo → set Root
+   Directory to `web/frontend` (Vite is auto-detected) → set the env var
+   `VITE_API_BASE` to the Render URL from step 1 → deploy. Note the assigned
+   `https://<name>.vercel.app` URL.
+3. **Wire CORS:** back on Render, set `SMC_CORS_ORIGINS` to the Vercel URL
+   from step 2 and redeploy the backend service.
+
+Render's free tier sleeps after ~15 min idle and cold-starts (~30-60s) on
+the next request — expected, not a bug.
+
 ## Tests
 
 ```bash
