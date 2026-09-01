@@ -22,7 +22,7 @@ from assemble_sheet_music import (  # noqa: E402
     discover_pieces,
 )
 
-_NUM_RE = re.compile(r"^(.*)_(\d+)\.png$", re.IGNORECASE)
+_NUM_RE = re.compile(r"^(.*)_(\d+)\.(?:png|jpe?g|pdf)$", re.IGNORECASE)
 
 
 @dataclass

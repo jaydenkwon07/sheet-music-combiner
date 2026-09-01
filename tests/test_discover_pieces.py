@@ -64,3 +64,32 @@ def test_nfc_normalization_of_korean_prefix(tmp_path):
     _touch(tmp_path, nfd_name)
     result = discover_pieces(tmp_path, unicodedata.normalize("NFC", prefix))
     assert len(result) == 1
+
+
+def test_accepts_jpg_and_jpeg(tmp_path):
+    _touch(tmp_path, "Song_1.jpg")
+    _touch(tmp_path, "Song_2.jpeg")
+    result = discover_pieces(tmp_path, "Song")
+    assert [p.name for p in result] == ["Song_1.jpg", "Song_2.jpeg"]
+
+
+def test_accepts_pdf(tmp_path):
+    _touch(tmp_path, "Song_1.pdf")
+    result = discover_pieces(tmp_path, "Song")
+    assert [p.name for p in result] == ["Song_1.pdf"]
+
+
+def test_accepts_mixed_extensions_under_one_prefix(tmp_path):
+    _touch(tmp_path, "Song_1.png")
+    _touch(tmp_path, "Song_2.jpg")
+    _touch(tmp_path, "Song_3.pdf")
+    result = discover_pieces(tmp_path, "Song")
+    assert [p.name for p in result] == ["Song_1.png", "Song_2.jpg", "Song_3.pdf"]
+
+
+def test_duplicate_across_extensions_raises(tmp_path):
+    _touch(tmp_path, "Song_1.png")
+    _touch(tmp_path, "Song_1.pdf")  # same n via different extension
+    with pytest.raises(DiscoveryError) as exc:
+        discover_pieces(tmp_path, "Song")
+    assert "1" in str(exc.value)

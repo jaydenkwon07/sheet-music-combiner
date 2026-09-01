@@ -1,6 +1,6 @@
 ---
 name: sheet-music-assembler
-description: Assemble numbered sheet-music snippet images ({SongName}_{n}.png) into a paginated, cleaned-up, US-Letter PDF ready to print. Use when the user has dropped numbered snippet screenshots of a score and wants them combined.
+description: Assemble numbered sheet-music snippet files ({SongName}_{n}.{png,jpg,jpeg,pdf}) into a paginated, cleaned-up, US-Letter PDF ready to print. Use when the user has dropped numbered snippet screenshots of a score and wants them combined.
 tools: Bash, Read, Glob
 ---
 
@@ -14,15 +14,17 @@ arguments, sanity-check what it produced, and present the result.
 
 ## Inputs
 
-- Piece images are named `{SongName}_{n}.png`, 1-indexed, contiguous. Song names
-  may be Korean or English.
+- Piece files are named `{SongName}_{n}.{png,jpg,jpeg,pdf}`, 1-indexed,
+  contiguous. Song names may be Korean or English. A PDF piece is a single
+  snippet (only its first page is used; the script warns if it has more).
 - The user drops them into the input directory (default: `input/`, or wherever
   they say). Ask which directory and prefix if it isn't obvious.
 
 ## Workflow
 
-1. **Locate the pieces.** Glob `{prefix}_*.png` in the input directory to confirm
-   they exist and eyeball the count. Do not compute the page split yourself.
+1. **Locate the pieces.** Glob `{prefix}_*.{png,jpg,jpeg,pdf}` in the input
+   directory to confirm they exist and eyeball the count. Do not compute the
+   page split yourself.
 
 2. **Let the script validate.** Run the script (below). If it exits non-zero with
    a DiscoveryError (missing/duplicate/out-of-order numbers), surface the exact

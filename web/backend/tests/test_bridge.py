@@ -28,6 +28,10 @@ def test_derive_prefix_ambiguous_returns_none():
     assert br.derive_prefix(["A_1.png", "B_1.png"]) is None
 
 
+def test_derive_prefix_accepts_jpg_and_pdf():
+    assert br.derive_prefix(["Song_1.jpg", "Song_2.jpeg", "Song_3.pdf"]) == "Song"
+
+
 def test_validate_ok(tmp_path):
     _write(tmp_path, "Song", 5)
     r = br.validate_upload(tmp_path, "Song")

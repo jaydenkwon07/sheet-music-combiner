@@ -16,6 +16,7 @@ import unicodedata
 from pathlib import Path
 
 import numpy as np
+import pymupdf
 from PIL import Image
 
 MAX_PER_PAGE = 6
@@ -71,7 +72,8 @@ class PageBalanceError(Exception):
 
 
 def discover_pieces(input_dir: Path | str, prefix: str) -> list[Path]:
-    """Find ``{prefix}_{n}.png`` files and validate a gap-free 1-based sequence.
+    """Find ``{prefix}_{n}.{png,jpg,jpeg,pdf}`` files and validate a gap-free
+    1-based sequence.
 
     Filenames are NFC-normalized before matching so decomposed (NFD) Unicode
     uploads still match an NFC prefix. Returns the paths sorted by ``n``.
@@ -79,7 +81,9 @@ def discover_pieces(input_dir: Path | str, prefix: str) -> list[Path]:
     """
     input_dir = Path(input_dir)
     prefix_nfc = unicodedata.normalize("NFC", prefix)
-    pattern = re.compile(rf"^{re.escape(prefix_nfc)}_(\d+)\.png$", re.IGNORECASE)
+    pattern = re.compile(
+        rf"^{re.escape(prefix_nfc)}_(\d+)\.(?:png|jpe?g|pdf)$", re.IGNORECASE
+    )
 
     found: dict[int, list[Path]] = {}
     for entry in input_dir.iterdir():
@@ -92,7 +96,7 @@ def discover_pieces(input_dir: Path | str, prefix: str) -> list[Path]:
 
     if not found:
         raise DiscoveryError(
-            f"No files matching {prefix!r}_<n>.png found in {input_dir}"
+            f"No files matching {prefix!r}_<n>.(png|jpg|jpeg|pdf) found in {input_dir}"
         )
 
     duplicates = {n: paths for n, paths in found.items() if len(paths) > 1}
@@ -363,9 +367,26 @@ def flat_index_for_position(pages: list[int], page: int, index: int) -> int:
 
 
 def load_rgb(path: Path | str) -> np.ndarray:
-    """Load an image as an (H, W, 3) uint8 RGB array."""
+    """Load a piece as an (H, W, 3) uint8 RGB array.
+
+    Raster formats (PNG/JPG) go through Pillow. A PDF piece is one snippet:
+    its first page is rendered at the module DPI (extra pages are ignored here;
+    ``assemble`` warns about them via ``pdf_page_count``).
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".pdf":
+        with pymupdf.open(path) as doc:
+            pix = doc[0].get_pixmap(dpi=DPI, colorspace=pymupdf.csRGB, alpha=False)
+        arr = np.frombuffer(pix.samples, dtype=np.uint8)
+        return np.ascontiguousarray(arr.reshape(pix.height, pix.width, 3))
     with Image.open(path) as im:
         return np.asarray(im.convert("RGB"), dtype=np.uint8)
+
+
+def pdf_page_count(path: Path | str) -> int:
+    """Number of pages in a PDF (used to warn when a PDF piece has extras)."""
+    with pymupdf.open(path) as doc:
+        return doc.page_count
 
 
 def resize_rgb(arr: np.ndarray, scale: float) -> np.ndarray:
@@ -472,6 +493,10 @@ def assemble(
         piece_arrays.append(cleaned)
         for r in removed:
             warnings.append(f"piece {i} ({p.name}): {r}")
+        if p.suffix.lower() == ".pdf" and (n_pages := pdf_page_count(p)) > 1:
+            warnings.append(
+                f"piece {i} ({p.name}): PDF has {n_pages} pages; used page 1 only"
+            )
 
     if insert is not None:
         if not at_top and at_position is None:

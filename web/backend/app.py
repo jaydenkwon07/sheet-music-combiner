@@ -59,7 +59,10 @@ async def create_session(files: list[UploadFile] = File(...)):
         raise HTTPException(422, "No files with a valid filename were uploaded")
     prefix = br.derive_prefix(names)
     if prefix is None:
-        raise HTTPException(422, "Could not derive one {prefix}_{n}.png name from the uploads")
+        raise HTTPException(
+            422,
+            "Could not derive one {prefix}_{n}.{png,jpg,jpeg,pdf} name from the uploads",
+        )
     result = br.validate_upload(store.in_dir(sid), prefix)
     if not result.ok:
         raise HTTPException(422, result.error)
