@@ -86,9 +86,19 @@ upload and assemble, so don't post that URL publicly.
 
 Render's free tier sleeps after ~15 min idle and cold-starts (~30-60s) on
 the next request — expected, not a bug. The free instance is also capped at
-512 MB RAM; a very large snippet set can exceed that during PDF assembly, and
-a 502 on assemble means the instance needs upgrading, not that the CLI logic
-is broken.
+512 MB RAM. `/assemble` estimates the input's total megapixels from file
+headers (PDF pieces render at 300 DPI, so they're far heavier than
+screenshots) and returns a clean `413` if it exceeds `SMC_MAX_ASSEMBLE_MP`
+(default 40, sized for the free tier) instead of letting the job OOM the
+instance; raise that env var after upgrading to a larger plan. Assembly
+itself also streams pages to disk one at a time rather than holding every
+rendered page in memory, to keep peak usage low regardless of the limit.
+
+Session files (uploads + generated pages/PDF) live under the OS temp dir,
+which on Render is tmpfs — RAM-backed. A background sweep (`SMC_SESSION_TTL`,
+default 1h; `SMC_SESSION_SWEEP_INTERVAL`, default 15min) deletes expired
+sessions on a timer regardless of traffic, so leftover files from past
+uploads can't quietly accumulate across a long-running instance and OOM it.
 
 ## Tests
 

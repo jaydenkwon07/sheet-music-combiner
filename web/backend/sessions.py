@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import time
 import unicodedata
 import uuid
 from pathlib import Path
+from typing import Awaitable, Callable
 
 
 class SessionStore:
@@ -49,3 +51,18 @@ class SessionStore:
         for child in self.root.iterdir():
             if child.is_dir() and child.stat().st_mtime < cutoff:
                 shutil.rmtree(child, ignore_errors=True)
+
+
+async def periodic_sweep(
+    store: SessionStore,
+    interval_seconds: float,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> None:
+    """Sweep expired sessions on a fixed interval, independent of request
+    traffic. Session files live under tempfile.gettempdir(), which on
+    Render is tmpfs (RAM-backed) — without this, sessions only get swept
+    when someone happens to start a new upload, so a quiet-but-long-running
+    instance's memory grows unbounded until the container gets OOM-killed."""
+    while True:
+        store.sweep()
+        await sleep(interval_seconds)

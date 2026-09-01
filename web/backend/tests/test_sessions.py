@@ -1,9 +1,10 @@
+import asyncio
 import os
 import time
 
 import pytest
 
-from web.backend.sessions import SessionStore
+from web.backend.sessions import SessionStore, periodic_sweep
 
 
 def test_create_and_dirs(tmp_path):
@@ -42,3 +43,24 @@ def test_sweep_removes_expired(tmp_path):
     store.sweep()
     with pytest.raises(KeyError):
         store.in_dir(sid)
+
+
+def test_periodic_sweep_calls_sweep_before_each_sleep(tmp_path):
+    store = SessionStore(tmp_path, ttl_seconds=3600)
+    sweep_calls = []
+    store.sweep = lambda: sweep_calls.append(1)
+
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) >= 3:
+            raise asyncio.CancelledError
+
+    async def run():
+        with pytest.raises(asyncio.CancelledError):
+            await periodic_sweep(store, interval_seconds=42, sleep=fake_sleep)
+
+    asyncio.run(run())
+    assert sweep_calls == [1, 1, 1]
+    assert sleep_calls == [42, 42, 42]

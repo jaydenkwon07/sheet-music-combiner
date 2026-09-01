@@ -17,6 +17,7 @@ if str(_SCRIPTS) not in sys.path:
 
 from assemble_sheet_music import (  # noqa: E402
     DiscoveryError,
+    MemoryBudgetError,
     PageBalanceError,
     assemble,
     discover_pieces,
@@ -38,6 +39,7 @@ class ValidationResult:
 class AssembleResult:
     ok: bool
     needs_split: bool = False
+    too_large: bool = False
     counts: list[int] | None = None
     uniform_scale: float | None = None
     warnings: list[str] = field(default_factory=list)
@@ -65,14 +67,26 @@ def validate_upload(in_dir: Path, prefix: str) -> ValidationResult:
 
 
 def run_assemble(
-    in_dir: Path, prefix: str, out_dir: Path, margin: int, pages_spec: str | None
+    in_dir: Path,
+    prefix: str,
+    out_dir: Path,
+    margin: int,
+    pages_spec: str | None,
+    max_megapixels: float | None = None,
 ) -> AssembleResult:
     try:
         summary = assemble(
-            in_dir, prefix, out_dir, pages_spec=pages_spec, margin=margin
+            in_dir,
+            prefix,
+            out_dir,
+            pages_spec=pages_spec,
+            margin=margin,
+            max_megapixels=max_megapixels,
         )
     except PageBalanceError as exc:
         return AssembleResult(False, needs_split=True, error=str(exc), options=str(exc))
+    except MemoryBudgetError as exc:
+        return AssembleResult(False, too_large=True, error=str(exc))
     except (DiscoveryError, ValueError) as exc:
         return AssembleResult(False, error=str(exc))
     return AssembleResult(

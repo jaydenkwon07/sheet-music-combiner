@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -11,12 +14,26 @@ from pydantic import BaseModel
 
 from web.backend import assembler_bridge as br
 from web.backend.config import get_settings
-from web.backend.sessions import SessionStore
+from web.backend.sessions import SessionStore, periodic_sweep
 
 settings = get_settings()
 store = SessionStore(settings.session_root, settings.session_ttl_seconds)
 
-app = FastAPI(title="Sheet Music Assembler")
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    app.state.sweep_task = asyncio.create_task(
+        periodic_sweep(store, settings.session_sweep_interval_seconds)
+    )
+    try:
+        yield
+    finally:
+        app.state.sweep_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await app.state.sweep_task
+
+
+app = FastAPI(title="Sheet Music Assembler", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -82,11 +99,20 @@ def assemble_session(sid: str, req: AssembleRequest):
         out_dir = store.out_dir(sid)
     except KeyError:
         raise HTTPException(404, "unknown session")
-    result = br.run_assemble(in_dir, req.prefix, out_dir, req.margin, req.pages)
+    result = br.run_assemble(
+        in_dir,
+        req.prefix,
+        out_dir,
+        req.margin,
+        req.pages,
+        max_megapixels=settings.max_assemble_megapixels,
+    )
     if result.needs_split:
         raise HTTPException(
             422, detail={"needs_split": True, "message": result.error, "options": result.options}
         )
+    if result.too_large:
+        raise HTTPException(413, detail={"too_large": True, "error": result.error})
     if not result.ok:
         raise HTTPException(422, detail={"error": result.error})
     return {

@@ -73,3 +73,21 @@ def test_run_assemble_split_override(tmp_path):
     out.mkdir()
     r = br.run_assemble(src, "Song", out, margin=22, pages_spec="4,3")
     assert r.ok and r.counts == [4, 3]
+
+
+def test_run_assemble_over_budget_is_too_large(tmp_path):
+    src = tmp_path / "in"
+    out = tmp_path / "out"
+    _write(src, "Song", 5)
+    out.mkdir()
+    r = br.run_assemble(src, "Song", out, margin=22, pages_spec=None, max_megapixels=0.001)
+    assert not r.ok and r.too_large and "megapixel" in r.error.lower()
+
+
+def test_run_assemble_within_budget_ok(tmp_path):
+    src = tmp_path / "in"
+    out = tmp_path / "out"
+    _write(src, "Song", 5)
+    out.mkdir()
+    r = br.run_assemble(src, "Song", out, margin=22, pages_spec=None, max_megapixels=1000.0)
+    assert r.ok and not r.too_large

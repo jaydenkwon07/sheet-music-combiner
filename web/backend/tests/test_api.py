@@ -61,6 +61,16 @@ def test_assemble_happy_path_and_download():
     assert page.status_code == 200
 
 
+def test_assemble_over_memory_budget_returns_413(monkeypatch):
+    sid = _upload("Song", 5).json()["session_id"]
+    tiny = dataclasses.replace(app_module.settings, max_assemble_megapixels=0.0001)
+    monkeypatch.setattr(app_module, "settings", tiny)
+    r = client.post(f"/api/session/{sid}/assemble", json={"prefix": "Song"})
+    assert r.status_code == 413
+    detail = r.json()["detail"]
+    assert detail["too_large"] is True and "megapixel" in detail["error"].lower()
+
+
 def test_assemble_n7_needs_split_then_override():
     sid = _upload("Song", 7).json()["session_id"]
     r = client.post(f"/api/session/{sid}/assemble", json={"prefix": "Song"})
@@ -111,3 +121,11 @@ def test_upload_degenerate_filename_rejected():
     files = [("files", ("..", _png_bytes(), "image/png"))]
     r = client.post("/api/session", files=files)
     assert r.status_code == 422
+
+
+def test_lifespan_runs_and_cancels_background_sweep():
+    with TestClient(app) as ctx_client:
+        assert ctx_client.get("/docs").status_code == 200
+        task = app.state.sweep_task
+        assert not task.done()
+    assert task.cancelled() or task.done()

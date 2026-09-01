@@ -71,6 +71,14 @@ class PageBalanceError(Exception):
     """
 
 
+class MemoryBudgetError(Exception):
+    """Raised before allocating when the estimated input size exceeds the
+    configured megapixel budget. Lets a caller (e.g. the memory-limited web
+    instance) reject an oversized job cleanly instead of being OOM-killed
+    part way through assembly.
+    """
+
+
 def discover_pieces(input_dir: Path | str, prefix: str) -> list[Path]:
     """Find ``{prefix}_{n}.{png,jpg,jpeg,pdf}`` files and validate a gap-free
     1-based sequence.
@@ -389,6 +397,23 @@ def pdf_page_count(path: Path | str) -> int:
         return doc.page_count
 
 
+def _piece_pixel_dims(path: Path) -> tuple[int, int]:
+    """(width, height) in pixels a piece will occupy once loaded, read cheaply
+    from headers/metadata -- never decoding or rendering the full image."""
+    if path.suffix.lower() == ".pdf":
+        with pymupdf.open(path) as doc:
+            rect = doc[0].rect  # first page only; that's the piece we render
+        return round(rect.width * DPI / 72), round(rect.height * DPI / 72)
+    with Image.open(path) as im:  # PIL reads size from the header lazily
+        return im.width, im.height
+
+
+def estimate_megapixels(paths: list[Path]) -> float:
+    """Total megapixels the given pieces will occupy in memory, estimated from
+    headers without decoding. Used by the pre-allocation memory guard."""
+    return sum(w * h for w, h in (_piece_pixel_dims(Path(p)) for p in paths)) / 1e6
+
+
 def resize_rgb(arr: np.ndarray, scale: float) -> np.ndarray:
     """Resize an RGB array by a scale factor (LANCZOS)."""
     if scale == 1.0:
@@ -446,6 +471,32 @@ def save_pdf(pages: list[np.ndarray], path: Path | str) -> None:
     )
 
 
+def save_pdf_from_paths(png_paths: list[Path | str], path: Path | str) -> None:
+    """Combine already-written page PNGs into one RGB, 300-DPI PDF.
+
+    Opens each PNG lazily instead of taking full-resolution page arrays in
+    memory, so peak RAM during PDF assembly stays near one page rather than
+    all of them -- the difference between fitting in a 512 MB instance and
+    being OOM-killed. Bytes match ``save_pdf`` for identical pixels; dates are
+    pinned to the epoch so identical inputs stay byte-identical.
+    """
+    images = [Image.open(p) for p in png_paths]
+    try:
+        epoch = time.gmtime(0)
+        images[0].save(
+            path,
+            format="PDF",
+            resolution=float(DPI),
+            save_all=True,
+            append_images=images[1:],
+            creationDate=epoch,
+            modDate=epoch,
+        )
+    finally:
+        for im in images:
+            im.close()
+
+
 def save_png(arr: np.ndarray, path: Path | str) -> None:
     Image.fromarray(arr).convert("RGB").save(path, format="PNG", dpi=(DPI, DPI))
 
@@ -472,11 +523,14 @@ def assemble(
     at_top: bool = False,
     at_position: str | None = None,
     margin: int = DEFAULT_MARGIN_PX,
+    max_megapixels: float | None = None,
 ) -> dict:
     """Full deterministic pipeline. Returns a summary dict and writes outputs.
 
     Raises DiscoveryError / PageBalanceError / ValueError with clear messages;
-    the CLI turns those into non-zero exits rather than guessing.
+    the CLI turns those into non-zero exits rather than guessing. When
+    ``max_megapixels`` is set, an over-budget input raises MemoryBudgetError
+    before any large allocation (default None keeps the CLI unguarded).
     """
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
@@ -484,6 +538,17 @@ def assemble(
     prefix_nfc = unicodedata.normalize("NFC", prefix)
 
     paths = discover_pieces(input_dir, prefix)
+
+    if max_megapixels is not None:
+        est = estimate_megapixels(paths + ([Path(insert)] if insert else []))
+        if est > max_megapixels:
+            raise MemoryBudgetError(
+                f"Estimated input is ~{est:.1f} megapixels, which exceeds this "
+                f"instance's {max_megapixels:.1f} MP limit. Send fewer/smaller "
+                f"pieces, or run on an instance with more memory. (PDF pieces "
+                f"count at 300 DPI, so they are far heavier than screenshots.)"
+            )
+
     warnings: list[str] = []
     insert_factor: float | None = None
 
@@ -538,20 +603,27 @@ def assemble(
         if removed:
             warnings.append(f"page {i}: removed {len(removed)} stray group(s) [{'; '.join(removed)}]")
 
+    # The per-piece arrays are fully consumed into page_images now; drop them so
+    # their memory is reclaimed before the (larger) letter-page render phase.
+    del piece_arrays, grouped
+
     page_sizes = [(p.shape[1], p.shape[0]) for p in page_images]
     scale = compute_uniform_scale(page_sizes, margin)
 
+    # Render each page, write its PNG, and release the full-resolution array
+    # immediately -- never hold every ~24 MB letter page in RAM at once. The PDF
+    # is then streamed from the on-disk PNGs (see save_pdf_from_paths).
     png_paths: list[Path] = []
-    rendered: list[np.ndarray] = []
-    for i, page in enumerate(page_images, start=1):
-        letter = render_letter_page(page, scale, margin)
-        rendered.append(letter)
-        png_path = output_dir / f"{prefix_nfc}_page{i}.png"
+    for i in range(len(page_images)):
+        letter = render_letter_page(page_images[i], scale, margin)
+        page_images[i] = None  # type: ignore[assignment]  # free the source page
+        png_path = output_dir / f"{prefix_nfc}_page{i + 1}.png"
         save_png(letter, png_path)
+        del letter
         png_paths.append(png_path)
 
     pdf_path = output_dir / f"{prefix_nfc}.pdf"
-    save_pdf(rendered, pdf_path)
+    save_pdf_from_paths(png_paths, pdf_path)
 
     return {
         "prefix": prefix_nfc,
@@ -586,6 +658,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--at-top", action="store_true", help="insert at the very top")
     p.add_argument("--at-position", default=None, help="insert at <page>:<index> of the current layout")
     p.add_argument("--margin", type=int, default=DEFAULT_MARGIN_PX)
+    p.add_argument(
+        "--max-megapixels",
+        type=float,
+        default=None,
+        help="reject the job (before allocating) if estimated input exceeds this "
+        "many megapixels; guards a memory-limited host. Unset = no limit.",
+    )
     return p
 
 
@@ -601,11 +680,12 @@ def main(argv: list[str] | None = None) -> int:
             at_top=args.at_top,
             at_position=args.at_position,
             margin=args.margin,
+            max_megapixels=args.max_megapixels,
         )
     except PageBalanceError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    except (DiscoveryError, ValueError) as exc:
+    except (DiscoveryError, MemoryBudgetError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     _print_summary(summary)
