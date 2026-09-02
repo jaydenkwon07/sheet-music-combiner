@@ -24,7 +24,13 @@ MIN_PER_PAGE = 4
 
 # A pixel counts as "ink" when its grayscale value is below this. Threshold on
 # the grayscale mean (not pure black) so colored logos/watermarks register too.
-DARK_CUTOFF = 128
+# Kept well below 255 (not e.g. ~250) because real notation-export backgrounds
+# measure exactly 255 with no compression noise, but a thin vector line (a
+# closing/measure barline especially) anti-aliases to a genuinely faint gray --
+# measured as light as ~230 in real exports -- that must still count as content
+# or crop_to_content treats it as background and crops it away (every system's
+# trailing barline getting cut off is exactly this bug).
+DARK_CUTOFF = 235
 # A row is a staff line when this fraction of its pixels are ink (full-width
 # horizontal line), distinguishing it from vertical barlines/stubs.
 STAFF_ROW_FRACTION = 0.5
