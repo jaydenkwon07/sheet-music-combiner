@@ -66,11 +66,13 @@ def test_crop_all_white_is_unchanged():
 
 def test_crop_includes_faint_anti_aliased_line():
     """A real snippet's closing barline is a thin vector line that anti-
-    aliases to a faint gray (measured as dark as ~128-150, never pure black)
-    rather than solid ink -- crop_to_content must not treat it as background
-    and crop it away, or every system's trailing barline gets cut off."""
+    aliases to a genuinely faint gray (measured as light as ~230 in real
+    exports, never pure black) rather than solid ink -- crop_to_content must
+    not treat it as background and crop it away, or every system's trailing
+    barline gets cut off. Using ~230 here also guards the DARK_CUTOFF: a value
+    this light is only counted as content by a cutoff above it."""
     img = _white(200, 200)
     img[50:150, 40:90] = 0  # solid black main content (notehead/staff)
-    img[50:150, 95:97] = 150  # faint anti-aliased line just past it (barline)
+    img[50:150, 95:97] = 230  # faint anti-aliased line just past it (barline)
     cropped = crop_to_content(img)
     assert cropped.shape[1] == 57  # cols 40..96 -- the faint line must be included
