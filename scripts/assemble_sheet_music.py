@@ -775,7 +775,8 @@ def assemble(
             flat_index = 0
         else:
             page_str, _, idx_str = at_position.partition(":")
-            pre_layout = balance_pages(len(paths))  # map against current layout
+            pre_heights = [p.shape[0] for p in piece_arrays]
+            pre_layout = pack_pages(pre_heights, reference_spacing)  # map against current layout
             flat_index = flat_index_for_position(
                 pre_layout, int(page_str), int(idx_str)
             )
@@ -786,7 +787,10 @@ def assemble(
     if pages_spec is not None:
         counts = parse_pages_override(pages_spec, total)
     else:
-        counts = balance_pages(total)  # may raise PageBalanceError (N=7 gap)
+        piece_heights = [p.shape[0] for p in piece_arrays]
+        counts = pack_pages(piece_heights, reference_spacing)
+        if reference_spacing is not None:
+            warnings.extend(sparse_page_warnings(piece_heights, counts, reference_spacing))
 
     grouped = _split_into_pages(piece_arrays, counts)
     page_images: list[np.ndarray] = []

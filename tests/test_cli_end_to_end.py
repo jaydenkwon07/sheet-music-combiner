@@ -11,10 +11,17 @@ from assemble_sheet_music import (
 )
 
 
-def _snippet(spacing=30, width=800, n_lines=5, stray=False):
+def _snippet(spacing=30, width=800, n_lines=5, stray=False, pad=200):
     """A synthetic 'system': 5 full-width staff lines at a fixed spacing,
-    optionally with an isolated stray mark near the top-left corner."""
-    top, thick, pad = 40, 3, 40
+    optionally with an isolated stray mark near the top-left corner.
+
+    Default pad=200 gives a total height ~12x the staff spacing (40 + 30*4 +
+    3 + 200 = 363 at spacing=30), matching REF_SNIPPET_HEIGHT_SPACINGS, so
+    this fixture models a realistic single-staff snippet's height, not just
+    its staff-line spacing -- load-bearing now that pack_pages sizes pages by
+    height. Override pad to build an unusually tall ("voice + piano") snippet.
+    """
+    top, thick = 40, 3
     height = top + spacing * (n_lines - 1) + thick + pad
     img = np.full((height, width, 3), 255, dtype=np.uint8)
     for i in range(n_lines):
@@ -61,19 +68,37 @@ def test_pdf_has_expected_page_count(tmp_path):
     assert data.count(b"/Type /Page\n") == 3
 
 
-def test_n7_without_pages_exits_nonzero(tmp_path, capsys):
+def test_n7_without_pages_resolves_automatically(tmp_path):
+    # The height-aware packer removes the old N=7 gap: with a measurable
+    # reference spacing, pack_pages resolves N=7 to [4, 3] without an error.
     src = tmp_path / "in"
     out = tmp_path / "out"
     src.mkdir()
     _write_pieces(src, "Song", 7)
+    summary = assemble(src, "Song", out)
+    assert summary["counts"] == [4, 3]
+    assert summary["pdf"].exists()
+
+
+def test_n7_with_no_measurable_reference_still_raises(tmp_path):
+    # No staff lines anywhere -> normalize_piece_scales returns reference
+    # spacing None -> pack_pages delegates to balance_pages(7), which still
+    # raises for the N=7 gap. The fallback path keeps today's behaviour;
+    # only the height-aware (measurable-reference) path resolves N=7
+    # automatically.
+    src = tmp_path / "in"
+    out = tmp_path / "out"
+    src.mkdir()
+    for i in range(1, 8):
+        Image.fromarray(np.full((120, 200, 3), 255, dtype=np.uint8)).save(
+            src / f"Song_{i}.png"
+        )
     code = main([
         "--input-dir", str(src),
         "--prefix", "Song",
         "--output-dir", str(out),
     ])
     assert code == 2
-    err = capsys.readouterr().err
-    assert "7" in err
 
 
 def test_n7_with_pages_override_succeeds(tmp_path):
@@ -132,3 +157,25 @@ def test_identical_inputs_produce_byte_identical_output(tmp_path):
     assert summary1["pdf"].read_bytes() == summary2["pdf"].read_bytes()
     for p1, p2 in zip(summary1["page_pngs"], summary2["page_pngs"]):
         assert p1.read_bytes() == p2.read_bytes()
+
+
+def test_at_position_uses_height_aware_pre_layout(tmp_path):
+    src = tmp_path / "in"
+    out = tmp_path / "out"
+    src.mkdir()
+    # 4 "tall" snippets (~2.5x a normal single-staff height) -- height-aware
+    # packing splits these into 2 pages of 2 each, unlike balance_pages(4),
+    # which would give a single page of 4 (no measurable-height awareness).
+    _write_pieces(src, "Song", 4, spacing=30, pad=737)
+    ins = tmp_path / "extra.png"
+    Image.fromarray(_snippet(spacing=30, pad=737)).save(ins)
+
+    summary = assemble(src, "Song", out, insert=ins, at_position="2:0")
+
+    assert summary["num_pieces"] == 5
+    # flat_index_for_position([2, 2], page=2, index=0) == 2: the pre-insert
+    # layout put 2 tall snippets per page, so "page 2 index 0" lands right
+    # after the first 2 originals. Post-insert, 5 uniform tall pieces pack
+    # to [3, 2] (front-loaded, same base/remainder rule as the count-based
+    # formula).
+    assert summary["counts"] == [3, 2]
