@@ -722,6 +722,67 @@ git commit -m "Rewrite CLAUDE.md page-count balancing section for the height-awa
 
 **Type consistency:** `pack_pages(piece_heights: list[int], reference_spacing: float | None, *, gap: int = STACK_GAP_PX) -> list[int]` used identically in Task 3's implementation and Task 4's two call sites. `sparse_page_warnings(piece_heights, counts, reference_spacing, *, gap=STACK_GAP_PX) -> list[str]` likewise. `normalize_piece_scales`'s new 3-tuple return is consumed identically in Task 2's call-site edit and referenced by name (`reference_spacing`) in Task 4. ✅
 
+**Amendment (found during final whole-branch review):** the final reviewer (opus)
+found two Critical/Important defects in the shipped `pack_pages`, both independently
+verified by the controller by running the actual code (not by hand-derivation, after
+the Task 3 lesson below):
+
+1. **`num_pages` selection was wrong in general, not just at the four cherry-picked
+   examples.** The formula `total = sum(h) + (N-1)*gap` counts a gap for every
+   adjacent pair of pieces, but a `k`-page split only has `N-k` *internal* gaps (the
+   `k-1` page-break points don't stack a gap). This inflated `total` enough to push
+   `ceil(total/B)` over a page boundary for exact multiples of 6 at `h == h_ref`
+   (verified: N=6, 12, 18 all cost one extra page under the shipped formula, with
+   *no* warning emitted — a silent violation of the spec's non-negotiable "backward
+   compatible for the common case" constraint, which the four originally-verified
+   examples (7/11/14/15) didn't happen to expose since they don't sit on that
+   boundary). **Fix:** solve the corrected inequality `sum(h) + N*gap <= k*(B+gap)`
+   directly: `num_pages = ceil((sum(h) + N*gap) / (B + gap))`. Verified by direct
+   execution to restore `balance_pages`-identical output for N=6/7/11/12/13/14/15/16/18
+   at `h == h_ref` exactly, without changing behavior for the tall-snippet or mixed
+   cases (confirmed: `[2,3,4]` mixed test, `[1,1,1,1,1]` clamp test, and the
+   `--at-position` test's already-approved `[3,2]` all still hold).
+
+   A companion fix was required too: the `_snippet()` fixture's `pad=200` (Task 4)
+   produces height 363, not exactly `h_ref` (360) — a 0.8% overage that, even under
+   the *corrected* formula, legitimately costs an extra page at the N=6/12/18
+   boundary (12 items at 363px genuinely need more room than 12 items at exactly
+   360px). `pad` is corrected to 197 (height 363 -> 360, exactly `h_ref`) so the
+   fixture is a precise model of "one normal snippet at the calibration constant,"
+   not an approximation with 3px of unaccounted slop.
+
+2. **The greedy "largest feasible group first" reconstruction stranded near-empty
+   trailing pages in the feature's own motivating case.** For uniform tall (2.5x
+   `h_ref`) snippets, the shipped algorithm produced results like `N=9 -> [3,3,2,1]`
+   and `N=11 -> [3,3,3,1,1]` — every one leaving a single stranded snippet alone on
+   the last page, each firing a `sparse_page_warnings` message claiming "a very tall
+   snippet elsewhere forced an uneven split," which is false when every snippet is
+   the same height. Both `[3,3,3,2,1]`-style and `[3,3,2,2,2]`-style partitions tie
+   at the same true-minimal tallest-page height (that's what made Task 3's original
+   exact-value test wrong), but the greedy consistently picked the most lopsided
+   member of the tie class. **Fix:** replace the single-stage greedy reconstruction
+   with a two-stage DP: stage 1 finds the true minimal tallest-page height `M`
+   (unchanged logic); stage 2, among all partitions whose every page is `<= M`,
+   finds the one minimizing the sum of squared page heights (penalizing unevenness),
+   with ties in stage 2 broken toward the largest group appearing earliest
+   (preserving the `[6,5]`-not-`[5,6]` front-loaded convention, since same-multiset
+   reorderings tie in sum-of-squares too). Verified by direct execution: all four
+   backward-compat examples unchanged, the `--at-position` test's `[3,2]` unchanged,
+   the mixed/clamp/no-reference tests unchanged, and the tall-snippet stranding is
+   gone with zero spurious warnings (`N=9..12` all produce warning-free, no-1-piece-page
+   results). `test_tall_snippets_pack_fewer_per_page` reverts to asserting the exact
+   value `[3, 3, 2, 2, 2]` (the originally-intended value from before Task 3's
+   discovery) — the algorithm now actually produces it.
+
+A prefix-sum optimization was folded in at the same time (the shipped `pack_pages`
+was O(N^3*k) from re-summing slices inside the DP inner loop; a prefix-sum array
+brings it to the documented O(N^2*k)), plus an `n == 0 -> []` guard and new
+regression tests for N=6/12/13/16/18 and a genuine (not uniform-tall) sparse-page
+E2E scenario. See the final-review fix-wave commit for the complete diff; this
+amendment exists so a future reader understands why the shipped algorithm differs
+from what Task 3/4 originally built, without needing to reconstruct the reasoning
+from review transcripts.
+
 **Amendment (found during Task 3 execution):** `test_tall_snippets_pack_fewer_per_page`'s originally-specified exact expected value `[3, 3, 2, 2, 2]` was wrong — hand-tracing the DP+greedy-reconstruction algorithm exactly as specified (front-loaded: always take the largest height-feasible, suffix-feasible group at each step) actually yields `[3, 3, 3, 2, 1]` for this input. Both partitions tie at the true optimal max-group-height (980), so the algorithm is correct; only the plan's hand-derived exact-value assertion was in error. The test above now checks the properties the algorithm actually guarantees (sum, achieved max-height equals the proven optimum, fewer-per-page than `balance_pages`) instead of asserting one specific tied distribution. The algorithm itself was not changed.
 
 **One design decision made explicit here (not fully pinned down in the spec's "Open questions"):** the spec's "Interface changes" section (item 3) states definitively that `balance_pages`'s N=7 raise "stays for the fallback," while a separate "Open questions" note says the author is "leaning yes" toward dropping it there too. This plan follows the definitive Interface-changes text (keep the fallback's raise) since it's the more authoritative statement, and locks the decision in with `test_n7_with_no_measurable_reference_still_raises` (Task 4). If Jayden wants the fallback's N=7 raise dropped too, that's a small follow-up: remove the `MIN_PER_PAGE` check from `balance_pages`, delete that regression test, and update CLAUDE.md's "No reliable reference" bullet.
