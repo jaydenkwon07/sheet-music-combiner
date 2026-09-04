@@ -34,6 +34,11 @@ DARK_CUTOFF = 235
 # A row is a staff line when this fraction of its pixels are ink (full-width
 # horizontal line), distinguishing it from vertical barlines/stubs.
 STAFF_ROW_FRACTION = 0.5
+# When normalizing every piece to a common staff spacing, a rescale within this
+# fraction of 1.0 is skipped -- avoids needlessly resampling (softening) pieces
+# that already match, and keeps an already-consistent set byte-for-byte
+# identical to the pre-normalization output.
+SCALE_NOOP_TOLERANCE = 0.02
 
 # Gap-tolerant grouping of connected ink when finding stray-mark groups.
 GROUP_GAP_PX = 25
@@ -219,6 +224,51 @@ def rescale_factor(reference_spacing: float, inserted_spacing: float) -> float:
     if inserted_spacing <= 0:
         raise ValueError("inserted_spacing must be positive")
     return reference_spacing / inserted_spacing
+
+
+def normalize_piece_scales(
+    pieces: list[np.ndarray],
+) -> tuple[list[np.ndarray], list[str]]:
+    """Rescale every piece so its staff-line spacing matches a common reference
+    (the MEDIAN measured spacing), so no snippet renders larger than the others
+    just because it was exported at a different DPI.
+
+    The median is used so one oddly-scaled outlier can't drag the reference. A
+    piece whose spacing can't be measured (<2 staff lines -- e.g. a chord-only
+    or lyric snippet) is left at native scale and reported. If fewer than 2
+    pieces are measurable there is no reliable reference, so all are left as-is.
+
+    Returns (possibly-rescaled pieces, human-readable warnings). Pieces already
+    within SCALE_NOOP_TOLERANCE of the reference are returned unchanged (same
+    object), so an already-consistent set is a true no-op.
+    """
+    spacings: list[float | None] = []
+    warnings: list[str] = []
+    for i, piece in enumerate(pieces, start=1):
+        gray = piece[..., :3].mean(axis=2) if piece.ndim == 3 else piece.astype(np.float32)
+        try:
+            spacings.append(measure_staff_spacing(gray))
+        except ValueError:
+            spacings.append(None)
+            warnings.append(f"piece {i}: staff spacing unmeasurable; left at native scale")
+
+    measured = [s for s in spacings if s is not None]
+    if len(measured) < 2:
+        return pieces, warnings
+
+    reference = float(np.median(measured))
+    out: list[np.ndarray] = []
+    for i, (piece, spacing) in enumerate(zip(pieces, spacings), start=1):
+        if spacing is None:
+            out.append(piece)
+            continue
+        factor = rescale_factor(reference, spacing)
+        if abs(factor - 1.0) <= SCALE_NOOP_TOLERANCE:
+            out.append(piece)
+            continue
+        out.append(resize_rgb(piece, factor))
+        warnings.append(f"piece {i}: rescaled x{factor:.3f} to match staff spacing")
+    return out, warnings
 
 
 def _to_ink_mask(arr: np.ndarray) -> np.ndarray:
@@ -568,6 +618,13 @@ def assemble(
             warnings.append(
                 f"piece {i} ({p.name}): PDF has {n_pages} pages; used page 1 only"
             )
+
+    # Normalize every piece to a common staff spacing before stacking, so a
+    # snippet exported at a different DPI doesn't render at a different note
+    # size than the rest. Done before the insert branch so the inserted piece
+    # (which matches itself to piece_arrays[0]) targets the normalized set.
+    piece_arrays, norm_warnings = normalize_piece_scales(piece_arrays)
+    warnings.extend(norm_warnings)
 
     if insert is not None:
         if not at_top and at_position is None:
