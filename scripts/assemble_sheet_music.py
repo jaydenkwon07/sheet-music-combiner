@@ -228,7 +228,7 @@ def rescale_factor(reference_spacing: float, inserted_spacing: float) -> float:
 
 def normalize_piece_scales(
     pieces: list[np.ndarray],
-) -> tuple[list[np.ndarray], list[str]]:
+) -> tuple[list[np.ndarray], list[str], float | None]:
     """Rescale every piece so its staff-line spacing matches a common reference
     (the MEDIAN measured spacing), so no snippet renders larger than the others
     just because it was exported at a different DPI.
@@ -238,9 +238,13 @@ def normalize_piece_scales(
     or lyric snippet) is left at native scale and reported. If fewer than 2
     pieces are measurable there is no reliable reference, so all are left as-is.
 
-    Returns (possibly-rescaled pieces, human-readable warnings). Pieces already
-    within SCALE_NOOP_TOLERANCE of the reference are returned unchanged (same
-    object), so an already-consistent set is a true no-op.
+    Returns (possibly-rescaled pieces, human-readable warnings, reference
+    spacing). ``reference_spacing`` is the median measured spacing --
+    ``pack_pages`` uses it to build its height budget -- or None when fewer
+    than 2 pieces were measurable (callers should fall back to count-based
+    ``balance_pages``). Pieces already within SCALE_NOOP_TOLERANCE of the
+    reference are returned unchanged (same object), so an already-consistent
+    set is a true no-op.
     """
     spacings: list[float | None] = []
     warnings: list[str] = []
@@ -254,7 +258,7 @@ def normalize_piece_scales(
 
     measured = [s for s in spacings if s is not None]
     if len(measured) < 2:
-        return pieces, warnings
+        return pieces, warnings, None
 
     reference = float(np.median(measured))
     out: list[np.ndarray] = []
@@ -268,7 +272,7 @@ def normalize_piece_scales(
             continue
         out.append(resize_rgb(piece, factor))
         warnings.append(f"piece {i}: rescaled x{factor:.3f} to match staff spacing")
-    return out, warnings
+    return out, warnings, reference
 
 
 def _to_ink_mask(arr: np.ndarray) -> np.ndarray:
@@ -623,7 +627,7 @@ def assemble(
     # snippet exported at a different DPI doesn't render at a different note
     # size than the rest. Done before the insert branch so the inserted piece
     # (which matches itself to piece_arrays[0]) targets the normalized set.
-    piece_arrays, norm_warnings = normalize_piece_scales(piece_arrays)
+    piece_arrays, norm_warnings, reference_spacing = normalize_piece_scales(piece_arrays)
     warnings.extend(norm_warnings)
 
     if insert is not None:

@@ -27,7 +27,7 @@ def _gray(rgb):
 
 def test_mismatched_pieces_end_at_matching_spacing():
     pieces = [_rgb_staff(spacing=30), _rgb_staff(spacing=60)]
-    out, warnings = normalize_piece_scales(pieces)
+    out, warnings, _reference = normalize_piece_scales(pieces)
     # Median of {30, 60} is 45, so both are rescaled toward it and end up
     # measuring the same spacing as each other.
     s0 = measure_staff_spacing(_gray(out[0]))
@@ -42,7 +42,7 @@ def test_mismatched_pieces_end_at_matching_spacing():
 def test_unmeasurable_piece_is_left_alone_others_normalized():
     blank = np.full((120, 200, 3), 255, dtype=np.uint8)  # no staff lines
     pieces = [_rgb_staff(spacing=30), blank, _rgb_staff(spacing=60)]
-    out, warnings = normalize_piece_scales(pieces)
+    out, warnings, _reference = normalize_piece_scales(pieces)
     assert out[1] is pieces[1]  # blank untouched (identity)
     assert any("unmeasurable" in w for w in warnings)
     # The two measurable pieces still got normalized to each other.
@@ -53,7 +53,7 @@ def test_unmeasurable_piece_is_left_alone_others_normalized():
 
 def test_already_consistent_set_is_unchanged():
     pieces = [_rgb_staff(spacing=30) for _ in range(3)]
-    out, warnings = normalize_piece_scales(pieces)
+    out, warnings, _reference = normalize_piece_scales(pieces)
     assert warnings == []
     for original, result in zip(pieces, out):
         assert result is original  # within tolerance -> no resample
@@ -62,6 +62,19 @@ def test_already_consistent_set_is_unchanged():
 def test_fewer_than_two_measurable_returns_unchanged():
     blank = np.full((120, 200, 3), 255, dtype=np.uint8)
     pieces = [_rgb_staff(spacing=30), blank]
-    out, _warnings = normalize_piece_scales(pieces)
+    out, _warnings, _reference = normalize_piece_scales(pieces)
     for original, result in zip(pieces, out):
         assert result is original
+
+
+def test_reference_spacing_is_the_median_of_measured():
+    pieces = [_rgb_staff(spacing=30), _rgb_staff(spacing=60)]
+    _out, _warnings, reference = normalize_piece_scales(pieces)
+    assert reference == 45.0
+
+
+def test_reference_spacing_is_none_when_fewer_than_two_measurable():
+    blank = np.full((120, 200, 3), 255, dtype=np.uint8)
+    pieces = [_rgb_staff(spacing=30), blank]
+    _out, _warnings, reference = normalize_piece_scales(pieces)
+    assert reference is None
