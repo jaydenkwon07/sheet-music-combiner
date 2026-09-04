@@ -241,9 +241,22 @@ def test_tall_snippets_pack_fewer_per_page():
     s = 10.0
     h_ref = REF_SNIPPET_HEIGHT_SPACINGS * s  # 120.0
     heights = [round(2.5 * h_ref)] * 12  # 300 each, ~voice+piano height
-    assert pack_pages(heights, s) == [3, 3, 2, 2, 2]
+    counts = pack_pages(heights, s)
+    assert sum(counts) == 12
+    # 12 uniform-300 items in 5 pages: some page must hold >= ceil(12/5) = 3
+    # items, so the true minimum achievable max-group-height is 3*300+2*40 =
+    # 980 -- pack_pages must actually reach that minimum (not just return
+    # *a* valid partition). Multiple count-distributions tie at max=980
+    # (e.g. [3,3,2,2,2] and [3,3,3,2,1]); this only checks the achieved
+    # value, not which tied distribution was chosen.
+    gap = 40
+    group_heights, pos = [], 0
+    for c in counts:
+        group_heights.append(sum(heights[pos : pos + c]) + (c - 1) * gap)
+        pos += c
+    assert max(group_heights) == 980
     # Far fewer per page than the old fixed-count formula would give.
-    assert max(pack_pages(heights, s)) < max(balance_pages(12))
+    assert max(counts) < max(balance_pages(12))
 
 
 def test_mixed_tall_and_short_partitions_optimally_in_order():
@@ -708,5 +721,7 @@ git commit -m "Rewrite CLAUDE.md page-count balancing section for the height-awa
 **Placeholder scan:** No TODOs, no "add appropriate handling," no unfilled test bodies — every step has complete code. ✅
 
 **Type consistency:** `pack_pages(piece_heights: list[int], reference_spacing: float | None, *, gap: int = STACK_GAP_PX) -> list[int]` used identically in Task 3's implementation and Task 4's two call sites. `sparse_page_warnings(piece_heights, counts, reference_spacing, *, gap=STACK_GAP_PX) -> list[str]` likewise. `normalize_piece_scales`'s new 3-tuple return is consumed identically in Task 2's call-site edit and referenced by name (`reference_spacing`) in Task 4. ✅
+
+**Amendment (found during Task 3 execution):** `test_tall_snippets_pack_fewer_per_page`'s originally-specified exact expected value `[3, 3, 2, 2, 2]` was wrong — hand-tracing the DP+greedy-reconstruction algorithm exactly as specified (front-loaded: always take the largest height-feasible, suffix-feasible group at each step) actually yields `[3, 3, 3, 2, 1]` for this input. Both partitions tie at the true optimal max-group-height (980), so the algorithm is correct; only the plan's hand-derived exact-value assertion was in error. The test above now checks the properties the algorithm actually guarantees (sum, achieved max-height equals the proven optimum, fewer-per-page than `balance_pages`) instead of asserting one specific tied distribution. The algorithm itself was not changed.
 
 **One design decision made explicit here (not fully pinned down in the spec's "Open questions"):** the spec's "Interface changes" section (item 3) states definitively that `balance_pages`'s N=7 raise "stays for the fallback," while a separate "Open questions" note says the author is "leaning yes" toward dropping it there too. This plan follows the definitive Interface-changes text (keep the fallback's raise) since it's the more authoritative statement, and locks the decision in with `test_n7_with_no_measurable_reference_still_raises` (Task 4). If Jayden wants the fallback's N=7 raise dropped too, that's a small follow-up: remove the `MIN_PER_PAGE` check from `balance_pages`, delete that regression test, and update CLAUDE.md's "No reliable reference" bullet.
