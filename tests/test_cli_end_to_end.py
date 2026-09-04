@@ -11,15 +11,17 @@ from assemble_sheet_music import (
 )
 
 
-def _snippet(spacing=30, width=800, n_lines=5, stray=False, pad=200):
+def _snippet(spacing=30, width=800, n_lines=5, stray=False, pad=197):
     """A synthetic 'system': 5 full-width staff lines at a fixed spacing,
     optionally with an isolated stray mark near the top-left corner.
 
-    Default pad=200 gives a total height ~12x the staff spacing (40 + 30*4 +
-    3 + 200 = 363 at spacing=30), matching REF_SNIPPET_HEIGHT_SPACINGS, so
-    this fixture models a realistic single-staff snippet's height, not just
-    its staff-line spacing -- load-bearing now that pack_pages sizes pages by
-    height. Override pad to build an unusually tall ("voice + piano") snippet.
+    Default pad=197 gives a total height of EXACTLY 12x the staff spacing
+    (40 + 30*4 + 3 + 197 = 360 at spacing=30), matching
+    REF_SNIPPET_HEIGHT_SPACINGS precisely -- load-bearing now that
+    pack_pages sizes pages by height: any overage here (the previous
+    pad=200 gave height 363, a 0.8% overage) silently costs an extra page
+    at exact-multiple-of-6 piece counts. Override pad to build an
+    unusually tall ("voice + piano") snippet.
     """
     top, thick = 40, 3
     height = top + spacing * (n_lines - 1) + thick + pad
@@ -179,3 +181,21 @@ def test_at_position_uses_height_aware_pre_layout(tmp_path):
     # to [3, 2] (front-loaded, same base/remainder rule as the count-based
     # formula).
     assert summary["counts"] == [3, 2]
+
+
+def test_sparse_page_warning_fires_for_a_genuinely_lopsided_split(tmp_path):
+    src = tmp_path / "in"
+    out = tmp_path / "out"
+    src.mkdir()
+    # 1 giant snippet (5x h_ref) + 4 modest ones (0.5x h_ref), spacing=30.
+    # pack_pages puts the giant alone on page 1 and the 4 modest ones on
+    # page 2; page 2's height (4*180 + 3*40 = 840) is well under 40% of the
+    # budget (2360), so a sparse warning must fire for it.
+    Image.fromarray(_snippet(spacing=30, pad=1637)).save(src / "Song_1.png")  # height 1800
+    for i in range(2, 6):
+        Image.fromarray(_snippet(spacing=30, pad=17)).save(src / f"Song_{i}.png")  # height 180
+
+    summary = assemble(src, "Song", out)
+
+    assert summary["counts"] == [1, 4]
+    assert any("sparse" in w and "page 2" in w for w in summary["warnings"])

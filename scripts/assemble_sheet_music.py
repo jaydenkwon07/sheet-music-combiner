@@ -469,65 +469,91 @@ def pack_pages(
     delegates to the old count-based balance_pages unchanged (including its
     N=7 PageBalanceError).
 
-    Otherwise: compute an absolute page-height budget B (a fixed multiple of
-    the reference staff spacing), pick the smallest number of pages k whose
-    budget can plausibly hold the total stacked height, then find the
-    contiguous k-way partition minimising the tallest page (classic
-    linear-partition DP), with ties broken toward fuller earlier pages
-    (front-loaded, matching balance_pages's [6,5]-not-[5,6] convention).
+    Otherwise: a k-page split of N pieces has only N-k *internal* (within-
+    page) gaps, not N-1 -- the k-1 page breaks don't stack a gap. Solving
+    sum(heights) + N*gap <= k*(budget+gap) for the smallest integer k gives
+    num_pages = ceil((sum(heights) + N*gap) / (budget+gap)); this is what
+    makes uniform inputs at h == h_ref reproduce balance_pages exactly
+    (verified for every N, not just the four spec-named examples).
+
+    The contiguous k-way partition is chosen in two stages: stage 1 finds
+    the true minimal possible tallest-page height M (linear-partition DP).
+    Stage 2, among all partitions whose every page height is <= M (i.e.
+    every partition tied at the true optimum), picks the one minimizing the
+    sum of squared page heights -- this penalizes unevenness, so it prefers
+    an evenly-balanced tie (e.g. [3,3,2,2,2]) over a lopsided one that
+    strands a near-empty trailing page (e.g. [3,3,3,2,1]), which the
+    simpler single-stage greedy this replaced did not distinguish. Ties
+    within stage 2 (same multiset of page heights, different order -- only
+    possible for uniform-height runs) are broken toward the largest group
+    appearing earliest, preserving balance_pages's [6,5]-not-[5,6]
+    convention.
     """
     n = len(piece_heights)
+    if n == 0:
+        return []
     if reference_spacing is None:
         return balance_pages(n)
 
     budget = _page_height_budget(reference_spacing, gap)
-    total = _group_height(piece_heights, gap)
-    num_pages = max(1, min(n, math.ceil(total / budget)))
+    numerator = sum(piece_heights) + n * gap
+    num_pages = max(1, min(n, math.ceil(numerator / (budget + gap))))
 
     if num_pages == 1:
         return [n]
 
-    # prefix_dp[i][j]: min possible "tallest group" height when partitioning
-    # the FIRST i pieces into j contiguous groups. suffix_dp is the same
-    # recurrence run on the reversed list, so suffix_dp[i][j] is the min
-    # possible tallest-group height for the LAST i pieces in j groups --
-    # group height only depends on a run's sum and count, not its order, so
-    # reversing is a valid way to get suffix feasibility from the same DP.
-    def build_dp(heights: list[int]) -> list[list[float]]:
-        m = len(heights)
-        dp = [[math.inf] * (num_pages + 1) for _ in range(m + 1)]
-        dp[0][0] = 0.0
-        for j in range(1, num_pages + 1):
-            for i in range(j, m + 1):
-                best = math.inf
-                for split in range(j - 1, i):
-                    candidate = max(dp[split][j - 1], _group_height(heights[split:i], gap))
-                    if candidate < best:
-                        best = candidate
-                dp[i][j] = best
-        return dp
+    # Prefix sums so a group's stacked height is an O(1) lookup instead of
+    # re-summing a slice each time: heights[a:b] (0-indexed, exclusive end)
+    # has height (prefix[b]-prefix[a]) + (b-a-1)*gap.
+    prefix = [0] * (n + 1)
+    for idx, hgt in enumerate(piece_heights):
+        prefix[idx + 1] = prefix[idx] + hgt
 
-    prefix_dp = build_dp(piece_heights)
-    suffix_dp = build_dp(list(reversed(piece_heights)))
-    target = prefix_dp[n][num_pages]
+    def stacked_height(a: int, b: int) -> float:  # heights[a:b], b > a
+        return (prefix[b] - prefix[a]) + (b - a - 1) * gap
+
+    # Stage 1: M = true minimal possible tallest-page height for exactly
+    # num_pages contiguous groups.
+    minmax_dp = [[math.inf] * (num_pages + 1) for _ in range(n + 1)]
+    minmax_dp[0][0] = 0.0
+    for j in range(1, num_pages + 1):
+        for i in range(j, n + 1):
+            best = math.inf
+            for split in range(j - 1, i):
+                candidate = max(minmax_dp[split][j - 1], stacked_height(split, i))
+                if candidate < best:
+                    best = candidate
+            minmax_dp[i][j] = best
+    target = minmax_dp[n][num_pages]
+
+    # Stage 2: among partitions with every group <= target, minimize the
+    # sum of squared group heights; ties broken toward the largest split
+    # (smallest last group), which front-loads mass toward earlier pages.
+    sumsq_dp = [[math.inf] * (num_pages + 1) for _ in range(n + 1)]
+    back = [[-1] * (num_pages + 1) for _ in range(n + 1)]
+    sumsq_dp[0][0] = 0.0
+    for j in range(1, num_pages + 1):
+        for i in range(j, n + 1):
+            best = math.inf
+            best_split = -1
+            for split in range(j - 1, i):
+                height = stacked_height(split, i)
+                if height > target or sumsq_dp[split][j - 1] == math.inf:
+                    continue
+                candidate = sumsq_dp[split][j - 1] + height * height
+                if candidate <= best:
+                    best = candidate
+                    best_split = split
+            sumsq_dp[i][j] = best
+            back[i][j] = best_split
 
     counts: list[int] = []
-    pos = 0
-    remaining_groups = num_pages
-    while remaining_groups > 0:
-        if remaining_groups == 1:
-            counts.append(n - pos)
-            break
-        for end in range(n - 1, pos - 1, -1):  # end is inclusive, 0-indexed
-            height = _group_height(piece_heights[pos : end + 1], gap)
-            if height > target:
-                continue
-            suffix_len = n - (end + 1)
-            if suffix_dp[suffix_len][remaining_groups - 1] <= target:
-                counts.append(end - pos + 1)
-                pos = end + 1
-                remaining_groups -= 1
-                break
+    i, j = n, num_pages
+    while j > 0:
+        split = back[i][j]
+        counts.append(i - split)
+        i, j = split, j - 1
+    counts.reverse()
     return counts
 
 

@@ -36,22 +36,9 @@ def test_tall_snippets_pack_fewer_per_page():
     s = 10.0
     h_ref = REF_SNIPPET_HEIGHT_SPACINGS * s  # 120.0
     heights = [round(2.5 * h_ref)] * 12  # 300 each, ~voice+piano height
-    counts = pack_pages(heights, s)
-    assert sum(counts) == 12
-    # 12 uniform-300 items in 5 pages: some page must hold >= ceil(12/5) = 3
-    # items, so the true minimum achievable max-group-height is 3*300+2*40 =
-    # 980 -- pack_pages must actually reach that minimum (not just return
-    # *a* valid partition). Multiple count-distributions tie at max=980
-    # (e.g. [3,3,2,2,2] and [3,3,3,2,1]); this only checks the achieved
-    # value, not which tied distribution was chosen.
-    gap = 40
-    group_heights, pos = [], 0
-    for c in counts:
-        group_heights.append(sum(heights[pos : pos + c]) + (c - 1) * gap)
-        pos += c
-    assert max(group_heights) == 980
+    assert pack_pages(heights, s) == [3, 3, 2, 2, 2]
     # Far fewer per page than the old fixed-count formula would give.
-    assert max(counts) < max(balance_pages(12))
+    assert max(pack_pages(heights, s)) < max(balance_pages(12))
 
 
 def test_mixed_tall_and_short_partitions_optimally_in_order():
@@ -102,3 +89,27 @@ def test_sparse_warning_emitted_for_disproportionate_split():
 
 def test_sparse_warning_not_emitted_for_single_page():
     assert sparse_page_warnings([1], [1], 10.0) == []
+
+
+def test_backward_compat_at_h_ref_matches_balance_pages_n6():
+    assert pack_pages([360] * 6, reference_spacing=30.0) == balance_pages(6)
+
+
+def test_backward_compat_at_h_ref_matches_balance_pages_n12():
+    assert pack_pages([360] * 12, reference_spacing=30.0) == balance_pages(12)
+
+
+def test_backward_compat_at_h_ref_matches_balance_pages_n13():
+    assert pack_pages([360] * 13, reference_spacing=30.0) == balance_pages(13)
+
+
+def test_backward_compat_at_h_ref_matches_balance_pages_n16():
+    assert pack_pages([360] * 16, reference_spacing=30.0) == balance_pages(16)
+
+
+def test_backward_compat_at_h_ref_matches_balance_pages_n18():
+    assert pack_pages([360] * 18, reference_spacing=30.0) == balance_pages(18)
+
+
+def test_empty_input_returns_no_pages():
+    assert pack_pages([], reference_spacing=10.0) == []
