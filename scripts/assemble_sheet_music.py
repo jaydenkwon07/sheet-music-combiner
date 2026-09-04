@@ -22,6 +22,11 @@ from PIL import Image
 MAX_PER_PAGE = 6
 MIN_PER_PAGE = 4
 
+# A normal single-system snippet is ~this many staff-line spacings tall (4-gap
+# staff + typical note/stem/ledger/lyric margin). Used to build an absolute,
+# spacing-scaled page-height budget for pack_pages, instead of a fixed count.
+REF_SNIPPET_HEIGHT_SPACINGS = 12.0
+
 # A pixel counts as "ink" when its grayscale value is below this. Threshold on
 # the grayscale mean (not pure black) so colored logos/watermarks register too.
 # Kept well below 255 (not e.g. ~250) because real notation-export backgrounds
@@ -427,6 +432,129 @@ def flat_index_for_position(pages: list[int], page: int, index: int) -> int:
     if index < 0 or index >= pages[page - 1]:
         raise ValueError(f"index {index} out of range for page {page} (size {pages[page - 1]})")
     return sum(pages[: page - 1]) + index
+
+
+def _page_height_budget(reference_spacing: float, gap: int = STACK_GAP_PX) -> float:
+    """Absolute page-height budget B: a fixed multiple of the reference staff
+    spacing, not of this run's own average piece height -- so a run of
+    unusually tall snippets produces MORE pages rather than being squeezed to
+    fit the same page count as a run of normal ones. MAX_PER_PAGE (6) is kept
+    as the anchor that reproduces balance_pages's splits for normal-height
+    uniform inputs."""
+    h_ref = REF_SNIPPET_HEIGHT_SPACINGS * reference_spacing
+    return MAX_PER_PAGE * h_ref + (MAX_PER_PAGE - 1) * gap
+
+
+def _group_height(heights: list[int], gap: int) -> float:
+    """Stacked height of a contiguous run of pieces: their heights plus the
+    gaps stack_pieces will insert between them."""
+    if not heights:
+        return 0.0
+    return sum(heights) + (len(heights) - 1) * gap
+
+
+def pack_pages(
+    piece_heights: list[int],
+    reference_spacing: float | None,
+    *,
+    gap: int = STACK_GAP_PX,
+) -> list[int]:
+    """Height-aware replacement for balance_pages: split the ordered piece
+    list into contiguous per-page groups sized by measured pixel height
+    rather than a fixed count, so unusually tall snippets (e.g. voice +
+    piano) land fewer per page.
+
+    ``reference_spacing`` is None when normalize_piece_scales found fewer
+    than 2 measurable pieces (no reliable reference) -- in that case this
+    delegates to the old count-based balance_pages unchanged (including its
+    N=7 PageBalanceError).
+
+    Otherwise: compute an absolute page-height budget B (a fixed multiple of
+    the reference staff spacing), pick the smallest number of pages k whose
+    budget can plausibly hold the total stacked height, then find the
+    contiguous k-way partition minimising the tallest page (classic
+    linear-partition DP), with ties broken toward fuller earlier pages
+    (front-loaded, matching balance_pages's [6,5]-not-[5,6] convention).
+    """
+    n = len(piece_heights)
+    if reference_spacing is None:
+        return balance_pages(n)
+
+    budget = _page_height_budget(reference_spacing, gap)
+    total = _group_height(piece_heights, gap)
+    num_pages = max(1, min(n, math.ceil(total / budget)))
+
+    if num_pages == 1:
+        return [n]
+
+    # prefix_dp[i][j]: min possible "tallest group" height when partitioning
+    # the FIRST i pieces into j contiguous groups. suffix_dp is the same
+    # recurrence run on the reversed list, so suffix_dp[i][j] is the min
+    # possible tallest-group height for the LAST i pieces in j groups --
+    # group height only depends on a run's sum and count, not its order, so
+    # reversing is a valid way to get suffix feasibility from the same DP.
+    def build_dp(heights: list[int]) -> list[list[float]]:
+        m = len(heights)
+        dp = [[math.inf] * (num_pages + 1) for _ in range(m + 1)]
+        dp[0][0] = 0.0
+        for j in range(1, num_pages + 1):
+            for i in range(j, m + 1):
+                best = math.inf
+                for split in range(j - 1, i):
+                    candidate = max(dp[split][j - 1], _group_height(heights[split:i], gap))
+                    if candidate < best:
+                        best = candidate
+                dp[i][j] = best
+        return dp
+
+    prefix_dp = build_dp(piece_heights)
+    suffix_dp = build_dp(list(reversed(piece_heights)))
+    target = prefix_dp[n][num_pages]
+
+    counts: list[int] = []
+    pos = 0
+    remaining_groups = num_pages
+    while remaining_groups > 0:
+        if remaining_groups == 1:
+            counts.append(n - pos)
+            break
+        for end in range(n - 1, pos - 1, -1):  # end is inclusive, 0-indexed
+            height = _group_height(piece_heights[pos : end + 1], gap)
+            if height > target:
+                continue
+            suffix_len = n - (end + 1)
+            if suffix_dp[suffix_len][remaining_groups - 1] <= target:
+                counts.append(end - pos + 1)
+                pos = end + 1
+                remaining_groups -= 1
+                break
+    return counts
+
+
+def sparse_page_warnings(
+    piece_heights: list[int],
+    counts: list[int],
+    reference_spacing: float,
+    *,
+    gap: int = STACK_GAP_PX,
+) -> list[str]:
+    """Warn (never block) when the height-aware packer left a page markedly
+    emptier than the others -- a very tall snippet elsewhere forced the
+    partition uneven. Same channel as stray-mark warnings; never fires for a
+    single-page result."""
+    if len(counts) <= 1:
+        return []
+    budget = _page_height_budget(reference_spacing, gap)
+    groups = _split_into_pages(piece_heights, counts)
+    warnings: list[str] = []
+    for i, group in enumerate(groups, start=1):
+        if _group_height(group, gap) < 0.4 * budget:
+            piece_word = "piece" if len(group) == 1 else "pieces"
+            warnings.append(
+                f"page {i}: sparse ({len(group)} {piece_word}); a very tall "
+                f"snippet elsewhere forced an uneven split"
+            )
+    return warnings
 
 
 # --------------------------------------------------------------------------
