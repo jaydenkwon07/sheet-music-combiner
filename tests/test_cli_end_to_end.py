@@ -11,17 +11,14 @@ from assemble_sheet_music import (
 )
 
 
-def _snippet(spacing=30, width=800, n_lines=5, stray=False, pad=197):
+def _snippet(spacing=30, width=1450, n_lines=5, stray=False, pad=197):
     """A synthetic 'system': 5 full-width staff lines at a fixed spacing,
     optionally with an isolated stray mark near the top-left corner.
 
-    Default pad=197 gives a total height of EXACTLY 12x the staff spacing
-    (40 + 30*4 + 3 + 197 = 360 at spacing=30), matching
-    REF_SNIPPET_HEIGHT_SPACINGS precisely -- load-bearing now that
-    pack_pages sizes pages by height: any overage here (the previous
-    pad=200 gave height 363, a 0.8% overage) silently costs an extra page
-    at exact-multiple-of-6 piece counts. Override pad to build an
-    unusually tall ("voice + piano") snippet.
+    Default width=1450 / pad=197 gives a realistic wide-staff aspect (content
+    width 1390 x height 360, ~4:1) -- load-bearing now that pack_pages sizes
+    pages by physical page fit, which depends on the snippet's width-to-height
+    ratio. Override width/pad to build differently-shaped snippets.
     """
     top, thick = 40, 3
     height = top + spacing * (n_lines - 1) + thick + pad
@@ -47,9 +44,9 @@ def test_full_run_11_pieces(tmp_path):
 
     summary = assemble(src, "Song", out)
 
-    assert summary["counts"] == [6, 5]
+    assert summary["counts"] == [4, 4, 3]
     assert summary["pdf"].exists()
-    assert len(summary["page_pngs"]) == 2
+    assert len(summary["page_pngs"]) == 3
     for png in summary["page_pngs"]:
         with Image.open(png) as im:
             assert im.size == (LETTER_WIDTH_PX, LETTER_HEIGHT_PX)
@@ -63,16 +60,17 @@ def test_pdf_has_expected_page_count(tmp_path):
     src.mkdir()
     _write_pieces(src, "Song", 15)
     summary = assemble(src, "Song", out)
-    assert summary["counts"] == [5, 5, 5]
-    # PDF exists, is non-trivial, and embeds 3 page objects
+    assert summary["counts"] == [4, 4, 4, 3]
+    # PDF exists, is non-trivial, and embeds 4 page objects
     data = summary["pdf"].read_bytes()
     assert len(data) > 0
-    assert data.count(b"/Type /Page\n") == 3
+    assert data.count(b"/Type /Page\n") == 4
 
 
 def test_n7_without_pages_resolves_automatically(tmp_path):
-    # The height-aware packer removes the old N=7 gap: with a measurable
-    # reference spacing, pack_pages resolves N=7 to [4, 3] without an error.
+    # The physical-page-budget packer removes the old N=7 gap: with a
+    # measurable reference width, pack_pages resolves N=7 to [4, 3] without
+    # an error.
     src = tmp_path / "in"
     out = tmp_path / "out"
     src.mkdir()
@@ -140,7 +138,7 @@ def test_insert_at_top_rescales_and_adds_piece(tmp_path):
     summary = assemble(src, "Song", out, insert=ins, at_top=True)
 
     assert summary["num_pieces"] == 6
-    assert summary["counts"] == [6]
+    assert sum(summary["counts"]) == 6
     assert summary["insert_factor"] == np.float64(0.5) or abs(summary["insert_factor"] - 0.5) < 0.05
 
 
@@ -165,39 +163,36 @@ def test_at_position_uses_height_aware_pre_layout(tmp_path):
     src = tmp_path / "in"
     out = tmp_path / "out"
     src.mkdir()
-    # 4 "tall" snippets (~2.5x a normal single-staff height) -- height-aware
-    # packing splits these into 2 pages of 2 each, unlike balance_pages(4),
-    # which would give a single page of 4 (no measurable-height awareness).
-    _write_pieces(src, "Song", 4, spacing=30, pad=737)
+    # 5 normal single-staff snippets. The height-aware pre-insert layout packs
+    # them [3, 2] (physical budget), so "--at-position 2:0" maps to flat index
+    # 3 -- the start of page 2. (balance_pages(5) would be a single page [5],
+    # for which "page 2" is out of range, so this genuinely exercises the
+    # height-aware pre-layout path.)
+    _write_pieces(src, "Song", 5, spacing=30)
     ins = tmp_path / "extra.png"
-    Image.fromarray(_snippet(spacing=30, pad=737)).save(ins)
+    Image.fromarray(_snippet(spacing=30)).save(ins)
 
     summary = assemble(src, "Song", out, insert=ins, at_position="2:0")
 
-    assert summary["num_pieces"] == 5
-    # flat_index_for_position([2, 2], page=2, index=0) == 2: the pre-insert
-    # layout put 2 tall snippets per page, so "page 2 index 0" lands right
-    # after the first 2 originals. Post-insert, 5 uniform tall pieces pack
-    # to [3, 2] (front-loaded, same base/remainder rule as the count-based
-    # formula).
-    assert summary["counts"] == [3, 2]
+    assert summary["num_pieces"] == 6
+    assert summary["counts"] == [3, 3]  # 6 normal snippets, physical budget
 
 
 def test_sparse_page_warning_fires_for_a_genuinely_lopsided_split(tmp_path):
     src = tmp_path / "in"
     out = tmp_path / "out"
     src.mkdir()
-    # 1 giant snippet (5x h_ref) + 4 modest ones (0.5x h_ref), spacing=30.
-    # pack_pages puts the giant alone on page 1 and the 4 modest ones on
-    # page 2; page 2's height (4*180 + 3*40 = 840) is well under 40% of the
-    # budget (2360), so a sparse warning must fire for it.
-    Image.fromarray(_snippet(spacing=30, pad=1637)).save(src / "Song_1.png")  # height 1800
-    for i in range(2, 6):
-        Image.fromarray(_snippet(spacing=30, pad=17)).save(src / f"Song_{i}.png")  # height 180
+    # One tall system (height 1500, still within the ~1625 budget) forces a
+    # [1, 2] split; the 2-short-piece page (163+40+163 = 366) is under 40% of
+    # the budget, so a sparse warning must fire for page 2. All same width so
+    # width-normalization is a no-op.
+    Image.fromarray(_snippet(spacing=30, pad=1337)).save(src / "Song_1.png")  # height 1500
+    for i in range(2, 4):
+        Image.fromarray(_snippet(spacing=30, pad=0)).save(src / f"Song_{i}.png")  # height 163
 
     summary = assemble(src, "Song", out)
 
-    assert summary["counts"] == [1, 4]
+    assert summary["counts"] == [1, 2]
     assert any("sparse" in w and "page 2" in w for w in summary["warnings"])
 
 

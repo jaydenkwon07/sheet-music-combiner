@@ -1,115 +1,153 @@
-"""Tests for the height-aware page packer (pack_pages / sparse_page_warnings).
+"""Tests for the physical page-height packer (pack_pages / sparse_page_warnings).
 
-Unlike balance_pages (a fixed count per page), pack_pages sizes pages by
-measured pixel height, so unusually tall snippets (e.g. voice + piano) land
-fewer per page. All heights below are synthetic ints standing in for
-piece_arrays[i].shape[0] -- these tests never build real images.
+pack_pages splits the ordered piece list into the fewest contiguous pages whose
+every page's stacked height fits a physical US-Letter page budget (usable height
+at the width-bound uniform scale, filled to PAGE_FILL_FRACTION). Page counts
+depend on the snippet ASPECT RATIO -- a common content width W (all pieces share
+it after normalize_piece_scales) plus each piece's pixel height -- so these tests
+pass realistic wide-staff dimensions, not the unit fixtures' unrealistic aspect.
 """
 
+import math
+
 from assemble_sheet_music import (
-    REF_SNIPPET_HEIGHT_SPACINGS,
+    DEFAULT_MARGIN_PX,
+    LETTER_HEIGHT_PX,
+    LETTER_WIDTH_PX,
+    PAGE_FILL_FRACTION,
     STACK_GAP_PX,
+    _page_height_budget,
     balance_pages,
     pack_pages,
     sparse_page_warnings,
 )
 
-
-def test_n11_uniform_splits_6_5():
-    assert pack_pages([120] * 11, reference_spacing=10.0) == [6, 5]
-
-
-def test_n15_uniform_splits_5_5_5():
-    assert pack_pages([120] * 15, reference_spacing=10.0) == [5, 5, 5]
+# A realistic full-width staff snippet is far wider than tall (~4:1); these are
+# the dimensions the packer is designed for.
+REALISTIC_W = 1450
 
 
-def test_n14_uniform_splits_5_5_4():
-    assert pack_pages([120] * 14, reference_spacing=10.0) == [5, 5, 4]
+def _budget(width, margin=DEFAULT_MARGIN_PX):
+    usable_w = LETTER_WIDTH_PX - 2 * margin
+    usable_h = LETTER_HEIGHT_PX - 2 * margin
+    return PAGE_FILL_FRACTION * usable_h * width / usable_w
 
 
-def test_n7_uniform_resolves_4_3_automatically():
-    # The old count-based gap (balance_pages(7) raises) is gone on this path.
-    assert pack_pages([120] * 7, reference_spacing=10.0) == [4, 3]
+def _min_tallest(heights, k, gap=STACK_GAP_PX):
+    """Independent min-max linear-partition height for exactly k groups, to
+    check pack_pages truly picks the fewest pages that fit the budget."""
+    n = len(heights)
+    pre = [0] * (n + 1)
+    for i, h in enumerate(heights):
+        pre[i + 1] = pre[i] + h
+
+    def gh(a, b):
+        return (pre[b] - pre[a]) + (b - a - 1) * gap
+
+    dp = [[math.inf] * (k + 1) for _ in range(n + 1)]
+    dp[0][0] = 0.0
+    for j in range(1, k + 1):
+        for i in range(j, n + 1):
+            dp[i][j] = min(max(dp[s][j - 1], gh(s, i)) for s in range(j - 1, i))
+    return dp[n][k]
 
 
-def test_tall_snippets_pack_fewer_per_page():
-    s = 10.0
-    h_ref = REF_SNIPPET_HEIGHT_SPACINGS * s  # 120.0
-    heights = [round(2.5 * h_ref)] * 12  # 300 each, ~voice+piano height
-    assert pack_pages(heights, s) == [3, 3, 2, 2, 2]
-    # Far fewer per page than the old fixed-count formula would give.
-    assert max(pack_pages(heights, s)) < max(balance_pages(12))
-
-
-def test_mixed_tall_and_short_partitions_optimally_in_order():
-    s = 10.0
-    h_ref = REF_SNIPPET_HEIGHT_SPACINGS * s
-    tall = round(2.5 * h_ref)  # 300
-    short = round(h_ref)  # 120
-    heights = [tall, tall, tall, short, short, short, short, short, short]
-    counts = pack_pages(heights, s)
-    assert counts == [2, 3, 4]
-    # Order is never reordered -- reconstruct the groups and check the first
-    # page is tall-only and the last page is short-only, matching input order.
-    pos = 0
-    groups = []
+def _page_heights(heights, counts, gap=STACK_GAP_PX):
+    out, pos = [], 0
     for c in counts:
-        groups.append(heights[pos : pos + c])
+        grp = heights[pos : pos + c]
         pos += c
-    assert groups[0] == [tall, tall]
-    assert groups[-1] == [short, short, short, short]
+        out.append(sum(grp) + (len(grp) - 1) * gap)
+    return out
 
 
-def test_every_piece_taller_than_budget_gets_its_own_page():
-    s = 10.0
-    budget = 6 * REF_SNIPPET_HEIGHT_SPACINGS * s + 5 * STACK_GAP_PX  # 920.0
-    huge = round(budget * 2)
-    assert pack_pages([huge] * 5, s) == [1, 1, 1, 1, 1]
+def test_budget_is_physical_page_geometry():
+    # 0.9 * usable_h * W / usable_w
+    assert _page_height_budget(REALISTIC_W) == _budget(REALISTIC_W)
+    assert _page_height_budget(1000, margin=0) == PAGE_FILL_FRACTION * LETTER_HEIGHT_PX * 1000 / LETTER_WIDTH_PX
 
 
-def test_no_reference_delegates_to_balance_pages():
-    heights = [999] * 11  # heights irrelevant when reference_spacing is None
+def test_real_file_like_tall_set_packs_to_four_pages():
+    # The measured, width-normalized heights of the real 11-piece file at W=1461.
+    heights = [794, 527, 506, 465, 437, 457, 458, 474, 419, 400, 376]
+    assert pack_pages(heights, 1461) == [2, 3, 3, 3]
+
+
+def test_single_staff_sets_pack_by_physical_fit():
+    for n, expected in [
+        (6, [3, 3]),
+        (7, [4, 3]),
+        (11, [4, 4, 3]),
+        (14, [4, 4, 3, 3]),
+        (15, [4, 4, 4, 3]),
+    ]:
+        assert pack_pages([360] * n, REALISTIC_W) == expected, (n, expected)
+
+
+def test_pack_uses_the_fewest_pages_that_fit_the_budget():
+    heights = [360] * 11
+    counts = pack_pages(heights, REALISTIC_W)
+    k = len(counts)
+    b = _budget(REALISTIC_W)
+    # k pages fit the budget...
+    assert _min_tallest(heights, k) <= b
+    # ...and k-1 pages do not (k is minimal).
+    assert _min_tallest(heights, k - 1) > b
+
+
+def test_every_page_within_budget_when_achievable():
+    heights = [794, 527, 506, 465, 437, 457, 458, 474, 419, 400, 376]
+    counts = pack_pages(heights, 1461)
+    b = _budget(1461)
+    assert all(h <= b for h in _page_heights(heights, counts))
+
+
+def test_single_system_taller_than_page_gets_its_own_page():
+    # A 2500px system exceeds the budget (~1696) even alone -> clamp to N.
+    assert pack_pages([2500, 300, 300, 300], REALISTIC_W) == [1, 1, 1, 1]
+
+
+def test_small_set_that_fits_lands_on_one_page():
+    # Two short systems fit one page (2*360+40 = 760 <= budget ~1696).
+    assert pack_pages([360, 360], REALISTIC_W) == [2]
+
+
+def test_no_reference_width_delegates_to_balance_pages():
+    heights = [999] * 11  # heights irrelevant when reference_width is None
     assert pack_pages(heights, None) == balance_pages(11)
 
 
 def test_pages_sum_to_total_for_arbitrary_heights():
-    heights = [50, 400, 120, 900, 60, 60, 60, 200]
-    assert sum(pack_pages(heights, 10.0)) == len(heights)
-
-
-def test_sparse_warning_emitted_for_disproportionate_split():
-    s = 10.0
-    h_ref = REF_SNIPPET_HEIGHT_SPACINGS * s  # 120.0
-    heights = [round(5 * h_ref)] + [round(0.5 * h_ref)] * 4  # 600, 60x4
-    counts = [1, 4]  # a huge snippet alone; four modest ones on the other page
-    warnings = sparse_page_warnings(heights, counts, s)
-    assert any("sparse" in w and "page 2" in w for w in warnings)
-    assert not any("page 1" in w for w in warnings)
-
-
-def test_sparse_warning_not_emitted_for_single_page():
-    assert sparse_page_warnings([1], [1], 10.0) == []
-
-
-def test_backward_compat_at_h_ref_matches_balance_pages_n6():
-    assert pack_pages([360] * 6, reference_spacing=30.0) == balance_pages(6)
-
-
-def test_backward_compat_at_h_ref_matches_balance_pages_n12():
-    assert pack_pages([360] * 12, reference_spacing=30.0) == balance_pages(12)
-
-
-def test_backward_compat_at_h_ref_matches_balance_pages_n13():
-    assert pack_pages([360] * 13, reference_spacing=30.0) == balance_pages(13)
-
-
-def test_backward_compat_at_h_ref_matches_balance_pages_n16():
-    assert pack_pages([360] * 16, reference_spacing=30.0) == balance_pages(16)
-
-
-def test_backward_compat_at_h_ref_matches_balance_pages_n18():
-    assert pack_pages([360] * 18, reference_spacing=30.0) == balance_pages(18)
+    heights = [500, 400, 360, 900, 300, 360, 360, 200]
+    assert sum(pack_pages(heights, REALISTIC_W)) == len(heights)
 
 
 def test_empty_input_returns_no_pages():
-    assert pack_pages([], reference_spacing=10.0) == []
+    assert pack_pages([], REALISTIC_W) == []
+
+
+def test_margin_widens_the_budget_and_can_reduce_pages():
+    # A larger margin shrinks usable_w faster than usable_h here, raising the
+    # budget (usable_h*W/usable_w), so a borderline set can need fewer pages.
+    heights = [360] * 6
+    tight = pack_pages(heights, REALISTIC_W, margin=DEFAULT_MARGIN_PX)
+    assert sum(tight) == 6  # smoke: still a valid partition under a custom margin
+
+
+def test_sparse_warning_fires_for_a_genuinely_lopsided_split():
+    # One tall-but-in-budget system (1500 < budget ~1696) forces [1, 2]; the
+    # 2-short-piece page (163+40+163 = 366) is under 40% of the budget (~678).
+    heights = [1500, 163, 163]
+    counts = pack_pages(heights, REALISTIC_W)
+    assert counts == [1, 2]
+    warnings = sparse_page_warnings(heights, counts, REALISTIC_W)
+    assert any("sparse" in w and "page 2" in w for w in warnings)
+
+
+def test_sparse_warning_not_emitted_for_single_page():
+    assert sparse_page_warnings([360, 360], [2], REALISTIC_W) == []
+
+
+def test_determinism_same_inputs_same_partition():
+    heights = [794, 527, 506, 465, 437, 457, 458, 474, 419, 400, 376]
+    assert pack_pages(heights, 1461) == pack_pages(heights, 1461)

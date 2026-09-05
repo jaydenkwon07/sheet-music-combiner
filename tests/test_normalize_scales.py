@@ -33,16 +33,6 @@ def _rgb_staff(spacing, n_lines=5, width=200, line_thickness=2, top=20):
     return img
 
 
-def _vertical_bar(width=200, height=120, bar_width=4):
-    """White RGB image with a single thin vertical bar: has measurable
-    content width, but no full-width horizontal row, so
-    measure_staff_spacing can never find a staff line on it."""
-    img = np.full((height, width, 3), 255, dtype=np.uint8)
-    x0 = width // 2
-    img[:, x0 : x0 + bar_width, :] = 0
-    return img
-
-
 def test_mismatched_widths_end_at_matching_width():
     pieces = [_rgb_staff(spacing=30, width=200), _rgb_staff(spacing=30, width=400)]
     out, warnings, _reference = normalize_piece_scales(pieces)
@@ -88,23 +78,17 @@ def test_fewer_than_two_measurable_widths_returns_unchanged():
         assert result is original
 
 
-def test_reference_spacing_is_median_of_post_rescale_spacing():
-    # Different widths (so a real width-rescale happens) AND different
-    # original spacings, so this distinguishes "median of RESCALED spacing"
-    # from "median of raw spacing" ({20, 30} -> 25, the wrong answer -- that
-    # would mean reference_spacing was measured before rescaling, not after).
-    pieces = [_rgb_staff(spacing=20, width=200), _rgb_staff(spacing=30, width=400)]
+def test_reference_width_is_median_of_measured_widths():
+    # _rgb_staff draws lines spanning the full width, so measure_content_width
+    # equals `width` exactly; median({200, 400}) = 300.
+    pieces = [_rgb_staff(spacing=30, width=200), _rgb_staff(spacing=30, width=400)]
     _out, _warnings, reference = normalize_piece_scales(pieces)
-    # Median width 300 -> factors 1.5 and 0.75 -> post-rescale spacings
-    # ~30 and ~22.5 -> median ~26.25.
-    assert abs(reference - 26.25) <= 2
+    assert reference == 300.0
 
 
-def test_reference_spacing_is_none_when_fewer_than_two_rescaled_have_spacing():
-    # Both pieces are width-measurable (so the rescale runs), but the second
-    # has no staff lines at all -- only one of the two rescaled outputs can
-    # ever yield a measurable spacing.
-    pieces = [_rgb_staff(spacing=30, width=200), _vertical_bar(width=400)]
+def test_reference_width_is_none_when_fewer_than_two_measurable():
+    blank = np.full((120, 200, 3), 255, dtype=np.uint8)  # no ink -> unmeasurable width
+    pieces = [_rgb_staff(spacing=30, width=200), blank]
     _out, _warnings, reference = normalize_piece_scales(pieces)
     assert reference is None
 

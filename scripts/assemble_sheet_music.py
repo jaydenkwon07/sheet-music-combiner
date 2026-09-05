@@ -22,11 +22,6 @@ from PIL import Image
 MAX_PER_PAGE = 6
 MIN_PER_PAGE = 4
 
-# A normal single-system snippet is ~this many staff-line spacings tall (4-gap
-# staff + typical note/stem/ledger/lyric margin). Used to build an absolute,
-# spacing-scaled page-height budget for pack_pages, instead of a fixed count.
-REF_SNIPPET_HEIGHT_SPACINGS = 12.0
-
 # A pixel counts as "ink" when its grayscale value is below this. Threshold on
 # the grayscale mean (not pure black) so colored logos/watermarks register too.
 # Kept well below 255 (not e.g. ~250) because real notation-export backgrounds
@@ -81,6 +76,11 @@ DEFAULT_MARGIN_PX = 22
 DPI = 300
 # Vertical whitespace inserted between stacked systems on a page.
 STACK_GAP_PX = 40
+
+# Target fraction of the usable page height a packed page fills. Below 1.0 so
+# systems get engraving-like breathing room top and bottom instead of being
+# crammed to the page edge; pack_pages uses it to size the per-page budget.
+PAGE_FILL_FRACTION = 0.9
 
 
 class DiscoveryError(Exception):
@@ -270,14 +270,12 @@ def normalize_piece_scales(
     as-is.
 
     Returns (possibly-rescaled pieces, human-readable warnings, reference
-    spacing). ``reference_spacing`` is no longer the controlled quantity
-    (width is) -- it's the median staff-line spacing OBSERVED on the
-    width-rescaled results, a representative sample of this run's note size
-    that ``pack_pages`` uses to build its height budget. It's None when
-    fewer than 2 of the (width-rescaled) pieces have measurable spacing.
-    Pieces already within SCALE_NOOP_TOLERANCE of the width reference are
-    returned unchanged (same object), so an already-consistent set is a true
-    no-op.
+    width). ``reference_width`` is the median measured content width (the same
+    value the pieces were rescaled toward), which pack_pages uses to size its
+    physical page-height budget; it is None when fewer than 2 pieces had
+    measurable width. Pieces already within SCALE_NOOP_TOLERANCE of the width
+    reference are returned unchanged (same object), so an already-consistent set
+    is a true no-op.
     """
     widths: list[int | None] = []
     warnings: list[str] = []
@@ -313,16 +311,7 @@ def normalize_piece_scales(
         out.append(resize_rgb(piece, factor))
         warnings.append(f"piece {i}: rescaled x{factor:.3f} to match staff width")
 
-    spacings: list[float] = []
-    for piece in out:
-        gray = piece[..., :3].mean(axis=2) if piece.ndim == 3 else piece.astype(np.float32)
-        try:
-            spacings.append(measure_staff_spacing(gray))
-        except ValueError:
-            continue
-    reference_spacing = float(np.median(spacings)) if len(spacings) >= 2 else None
-
-    return out, warnings, reference_spacing
+    return out, warnings, reference_width
 
 
 def _to_ink_mask(arr: np.ndarray) -> np.ndarray:
@@ -479,15 +468,21 @@ def flat_index_for_position(pages: list[int], page: int, index: int) -> int:
     return sum(pages[: page - 1]) + index
 
 
-def _page_height_budget(reference_spacing: float, gap: int = STACK_GAP_PX) -> float:
-    """Absolute page-height budget B: a fixed multiple of the reference staff
-    spacing, not of this run's own average piece height -- so a run of
-    unusually tall snippets produces MORE pages rather than being squeezed to
-    fit the same page count as a run of normal ones. MAX_PER_PAGE (6) is kept
-    as the anchor that reproduces balance_pages's splits for normal-height
-    uniform inputs."""
-    h_ref = REF_SNIPPET_HEIGHT_SPACINGS * reference_spacing
-    return MAX_PER_PAGE * h_ref + (MAX_PER_PAGE - 1) * gap
+def _page_height_budget(reference_width: float, margin: int = DEFAULT_MARGIN_PX) -> float:
+    """Content-pixel page-height budget: how much stacked height fits on one
+    physical US-Letter page at the width-bound uniform scale, filled to
+    PAGE_FILL_FRACTION.
+
+    After normalize_piece_scales every piece shares ~the same content width, so
+    the uniform scale is width-bound at usable_w/reference_width; the height that
+    then fits a page is usable_h / that = usable_h * reference_width / usable_w,
+    and the fill fraction leaves breathing room. This is only a packing
+    heuristic -- compute_uniform_scale still computes the real scale from actual
+    page sizes afterward, so the budget need not be pixel-exact.
+    """
+    usable_w = LETTER_WIDTH_PX - 2 * margin
+    usable_h = LETTER_HEIGHT_PX - 2 * margin
+    return PAGE_FILL_FRACTION * usable_h * reference_width / usable_w
 
 
 def _group_height(heights: list[int], gap: int) -> float:
@@ -500,56 +495,35 @@ def _group_height(heights: list[int], gap: int) -> float:
 
 def pack_pages(
     piece_heights: list[int],
-    reference_spacing: float | None,
+    reference_width: float | None,
     *,
+    margin: int = DEFAULT_MARGIN_PX,
     gap: int = STACK_GAP_PX,
 ) -> list[int]:
-    """Height-aware replacement for balance_pages: split the ordered piece
-    list into contiguous per-page groups sized by measured pixel height
-    rather than a fixed count, so unusually tall snippets (e.g. voice +
-    piano) land fewer per page.
+    """Split the ordered piece list into the fewest contiguous pages whose every
+    page's stacked height fits a physical US-Letter page budget (see
+    _page_height_budget), so page count follows real page geometry.
 
-    ``reference_spacing`` is None when normalize_piece_scales found fewer
-    than 2 measurable pieces (no reliable reference) -- in that case this
-    delegates to the old count-based balance_pages unchanged (including its
-    N=7 PageBalanceError).
+    ``reference_width`` is None when normalize_piece_scales found fewer than 2
+    measurable pieces (no reliable reference) -- then this delegates to the old
+    count-based balance_pages unchanged (including its N=7 PageBalanceError).
 
-    Otherwise: a k-page split of N pieces has only N-k *internal* (within-
-    page) gaps, not N-1 -- the k-1 page breaks don't stack a gap. Solving
-    sum(heights) + N*gap <= k*(budget+gap) for the smallest integer k gives
-    num_pages = ceil((sum(heights) + N*gap) / (budget+gap)); this is what
-    makes uniform inputs at h == h_ref reproduce balance_pages exactly
-    (verified for every N, not just the four spec-named examples).
-
-    The contiguous k-way partition is chosen in two stages: stage 1 finds
-    the true minimal possible tallest-page height M (linear-partition DP).
-    Stage 2, among all partitions whose every page height is <= M (i.e.
-    every partition tied at the true optimum), picks the one minimizing the
-    sum of squared page heights -- this penalizes unevenness, so it prefers
-    an evenly-balanced tie (e.g. [3,3,2,2,2]) over a lopsided one that
-    strands a near-empty trailing page (e.g. [3,3,3,2,1]), which the
-    simpler single-stage greedy this replaced did not distinguish. Ties
-    within stage 2 (same multiset of page heights, different order -- only
-    possible for uniform-height runs) are broken toward the largest group
-    appearing earliest, preserving balance_pages's [6,5]-not-[5,6]
-    convention.
+    Otherwise: build the min-max linear-partition DP over all page counts, pick
+    the smallest k whose optimal tallest page fits the budget (clamp to N if
+    even one-per-page can't -- a single system taller than a page, which
+    compute_uniform_scale then shrinks), and among partitions tied at that k's
+    optimal tallest-page height, choose the one minimising the sum of squared
+    page heights (penalising unevenness), front-loading final ties.
     """
     n = len(piece_heights)
     if n == 0:
         return []
-    if reference_spacing is None:
+    if reference_width is None:
         return balance_pages(n)
 
-    budget = _page_height_budget(reference_spacing, gap)
-    numerator = sum(piece_heights) + n * gap
-    num_pages = max(1, min(n, math.ceil(numerator / (budget + gap))))
+    budget = _page_height_budget(reference_width, margin)
 
-    if num_pages == 1:
-        return [n]
-
-    # Prefix sums so a group's stacked height is an O(1) lookup instead of
-    # re-summing a slice each time: heights[a:b] (0-indexed, exclusive end)
-    # has height (prefix[b]-prefix[a]) + (b-a-1)*gap.
+    # Prefix sums so a group's stacked height is an O(1) lookup.
     prefix = [0] * (n + 1)
     for idx, hgt in enumerate(piece_heights):
         prefix[idx + 1] = prefix[idx] + hgt
@@ -557,11 +531,12 @@ def pack_pages(
     def stacked_height(a: int, b: int) -> float:  # heights[a:b], b > a
         return (prefix[b] - prefix[a]) + (b - a - 1) * gap
 
-    # Stage 1: M = true minimal possible tallest-page height for exactly
-    # num_pages contiguous groups.
-    minmax_dp = [[math.inf] * (num_pages + 1) for _ in range(n + 1)]
+    # Min-max DP over every page count 1..n: minmax_dp[i][j] is the minimal
+    # possible tallest-group height when the first i pieces are split into j
+    # contiguous groups.
+    minmax_dp = [[math.inf] * (n + 1) for _ in range(n + 1)]
     minmax_dp[0][0] = 0.0
-    for j in range(1, num_pages + 1):
+    for j in range(1, n + 1):
         for i in range(j, n + 1):
             best = math.inf
             for split in range(j - 1, i):
@@ -569,11 +544,21 @@ def pack_pages(
                 if candidate < best:
                     best = candidate
             minmax_dp[i][j] = best
+
+    # Fewest pages whose optimal tallest page fits the budget; clamp to N.
+    num_pages = n
+    for k in range(1, n + 1):
+        if minmax_dp[n][k] <= budget:
+            num_pages = k
+            break
+
+    if num_pages == 1:
+        return [n]
+
     target = minmax_dp[n][num_pages]
 
-    # Stage 2: among partitions with every group <= target, minimize the
-    # sum of squared group heights; ties broken toward the largest split
-    # (smallest last group), which front-loads mass toward earlier pages.
+    # Among partitions with every group <= target, minimise the sum of squared
+    # group heights; ties broken toward the largest split (front-loaded).
     sumsq_dp = [[math.inf] * (num_pages + 1) for _ in range(n + 1)]
     back = [[-1] * (num_pages + 1) for _ in range(n + 1)]
     sumsq_dp[0][0] = 0.0
@@ -605,17 +590,17 @@ def pack_pages(
 def sparse_page_warnings(
     piece_heights: list[int],
     counts: list[int],
-    reference_spacing: float,
+    reference_width: float,
     *,
+    margin: int = DEFAULT_MARGIN_PX,
     gap: int = STACK_GAP_PX,
 ) -> list[str]:
-    """Warn (never block) when the height-aware packer left a page markedly
-    emptier than the others -- a very tall snippet elsewhere forced the
-    partition uneven. Same channel as stray-mark warnings; never fires for a
-    single-page result."""
+    """Warn (never block) when the packer left a page markedly emptier than the
+    others -- a very tall snippet elsewhere forced the partition uneven. Same
+    channel as stray-mark warnings; never fires for a single-page result."""
     if len(counts) <= 1:
         return []
-    budget = _page_height_budget(reference_spacing, gap)
+    budget = _page_height_budget(reference_width, margin)
     groups = _split_into_pages(piece_heights, counts)
     warnings: list[str] = []
     for i, group in enumerate(groups, start=1):
@@ -825,11 +810,10 @@ def assemble(
     # Normalize every piece to a common staff WIDTH before stacking, so pieces
     # captured at different resolutions or with different staff structures stack
     # into pages with consistent staff length (like real engraved sheet music).
-    # Note size is no longer controlled -- reference_spacing here is a derived
-    # OBSERVATION of post-rescale spacing, used only to feed pack_pages's height
-    # budget. Done before the insert branch so the inserted piece (which matches
-    # itself to piece_arrays[0]) targets the normalized set.
-    piece_arrays, norm_warnings, reference_spacing = normalize_piece_scales(piece_arrays)
+    # reference_width feeds pack_pages's physical page-height budget. Done before
+    # the insert branch so the inserted piece (which matches itself to
+    # piece_arrays[0]) targets the normalized set.
+    piece_arrays, norm_warnings, reference_width = normalize_piece_scales(piece_arrays)
     warnings.extend(norm_warnings)
 
     if insert is not None:
@@ -850,7 +834,7 @@ def assemble(
         else:
             page_str, _, idx_str = at_position.partition(":")
             pre_heights = [p.shape[0] for p in piece_arrays]
-            pre_layout = pack_pages(pre_heights, reference_spacing)  # map against current layout
+            pre_layout = pack_pages(pre_heights, reference_width, margin=margin)  # map against current layout
             flat_index = flat_index_for_position(
                 pre_layout, int(page_str), int(idx_str)
             )
@@ -862,9 +846,11 @@ def assemble(
         counts = parse_pages_override(pages_spec, total)
     else:
         piece_heights = [p.shape[0] for p in piece_arrays]
-        counts = pack_pages(piece_heights, reference_spacing)
-        if reference_spacing is not None:
-            warnings.extend(sparse_page_warnings(piece_heights, counts, reference_spacing))
+        counts = pack_pages(piece_heights, reference_width, margin=margin)
+        if reference_width is not None:
+            warnings.extend(
+                sparse_page_warnings(piece_heights, counts, reference_width, margin=margin)
+            )
 
     grouped = _split_into_pages(piece_arrays, counts)
     page_images: list[np.ndarray] = []
