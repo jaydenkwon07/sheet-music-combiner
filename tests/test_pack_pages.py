@@ -126,12 +126,12 @@ def test_empty_input_returns_no_pages():
     assert pack_pages([], REALISTIC_W) == []
 
 
-def test_margin_widens_the_budget_and_can_reduce_pages():
-    # A larger margin shrinks usable_w faster than usable_h here, raising the
-    # budget (usable_h*W/usable_w), so a borderline set can need fewer pages.
-    heights = [360] * 6
-    tight = pack_pages(heights, REALISTIC_W, margin=DEFAULT_MARGIN_PX)
-    assert sum(tight) == 6  # smoke: still a valid partition under a custom margin
+def test_larger_margin_raises_the_page_height_budget():
+    # The page is taller than it is wide, so shrinking both usable dimensions
+    # by a larger margin raises the ratio usable_h/usable_w -- and thus the
+    # height budget usable_h*W/usable_w. (Verifies margin actually affects the
+    # budget, which pack_pages/sparse_page_warnings thread through.)
+    assert _page_height_budget(1000, margin=200) > _page_height_budget(1000, margin=22)
 
 
 def test_sparse_warning_fires_for_a_genuinely_lopsided_split():
