@@ -10,6 +10,56 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-04-uniform-staff-width-design.md`
 
+**Amendment (final whole-branch review, opus, run against the real 11-piece file):**
+The review confirmed the feature works (all 11 systems now share one staff width; the
+two systems the old code destroyed at 0.32x render correctly) but found one Critical
+robustness regression and several doc/scope items. A single fix wave addressed:
+
+1. **Critical — unbounded rescale factor → potential OOM.** `measure_content_width`
+   returns a valid but meaningless small value (e.g. `1`) for a near-blank piece (one
+   dark pixel, a dust speck), so `rescale_factor(reference, 1)` yielded the full
+   reference width as the factor — a ~1455x upscale on the real file's reference,
+   ballooning a piece to a multi-hundred-MP array. The web memory guard estimates size
+   from file headers *before* load, so it cannot see a post-load rescale — a near-blank
+   upload could OOM the 512 MB Render tier. This is a NEW failure mode (the old
+   spacing-based code raised ValueError on <2 staff lines and left such a piece alone).
+   **Fix (controller-verified before dispatch by running the actual code):** clamp the
+   applied factor to a `[WIDTH_RESCALE_MIN_FACTOR=0.2, WIDTH_RESCALE_MAX_FACTOR=5.0]`
+   band; a factor outside it means an implausible width, so the piece is left at native
+   scale with a warning — reusing the existing "unmeasurable → native scale" behavior.
+   Verified: the real file's largest legitimate factor is 1.94 (well inside the band, so
+   real output is unchanged), the one-pixel degenerate case is left at 60x40 not
+   12000x8000, and all pre-existing tests still pass. A new test locks in the degenerate
+   case.
+2. **Two stale code comments** (the call-site comment and the `SCALE_NOOP_TOLERANCE`
+   comment) still described spacing-based normalization — updated to width.
+3. **CLAUDE.md §d caveats:** the background-wash limitation (`measure_content_width`
+   measures the video-frame width, not the staff, on the majority of pieces in this file
+   because the light-gray piano-key watermark registers as ink under `DARK_CUTOFF` — it
+   happened to give the right answer only because the staff nearly fills the frame there)
+   and a strengthened `--insert` warning (an inserted piece can be scaled *several times*
+   wrong, not just "may not be consistent," because its reference is piece 0's possibly-
+   mismeasured spacing).
+4. **Dead imports** in the rewritten `tests/test_normalize_scales.py` removed.
+
+**Parked as follow-ups (NOT in this branch — flagged to Jayden):**
+- **Page-height budget is wasteful on real multi-staff input** (the review's Issue 5):
+  the real file packs to 5 pages ~half-empty where 3 would fit at the same scale, because
+  `REF_SNIPPET_HEIGHT_SPACINGS = 12` models a single-staff snippet but these are
+  ~28-30-spacing piano+vocal systems. This is *mostly pre-existing* (the base also
+  mis-packs, at 4 pages) and partly sharpened here (`reference_spacing` is now a sample
+  from a heterogeneous population, not a shared value). It needs its own design decision
+  (budget from usable letter-page height vs. a spacing proxy) — separate spec, not a
+  fix-wave item.
+- **The `measure_content_width` background-wash fragility** deeper fix (measure the
+  staff-line span rather than the raw ink bbox) — documented as a §d caveat now; a real
+  future improvement, out of scope here.
+- **The `--insert` spacing-based rescale** remains the last consumer depending on
+  `measure_staff_spacing` being right; revisit when the separate between-staff
+  spacing-measurement bug is fixed.
+- Review Minors 7 (double float pass), 8 (e2e test is partly unit-shaped), 9 (extract
+  `observe_reference_spacing`) — polish, deferred.
+
 ## Global Constraints
 
 - **Isotropic rescale only.** Every rescale in this codebase scales both axes by the same factor — this plan does not introduce horizontal-only stretching.
