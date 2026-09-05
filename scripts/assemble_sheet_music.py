@@ -223,6 +223,20 @@ def measure_staff_spacing(gray: np.ndarray) -> float:
     return float(np.median(gaps))
 
 
+def measure_content_width(rgb: np.ndarray) -> int:
+    """Pixel width of the tightest bounding box around non-background ink --
+    the same ink-mask technique crop_to_content uses for its vertical extent,
+    here measuring the horizontal extent instead.
+
+    Raises ValueError if the piece has no detectable ink (blank).
+    """
+    mask = _to_ink_mask(np.asarray(rgb))
+    cols = np.flatnonzero(mask.any(axis=0))
+    if len(cols) == 0:
+        raise ValueError("No ink detected; cannot measure content width")
+    return int(cols[-1] - cols[0] + 1)
+
+
 def rescale_factor(reference_spacing: float, inserted_spacing: float) -> float:
     """Scale to apply to an inserted image so its staff spacing matches the
     reference: reference / inserted."""
@@ -234,50 +248,65 @@ def rescale_factor(reference_spacing: float, inserted_spacing: float) -> float:
 def normalize_piece_scales(
     pieces: list[np.ndarray],
 ) -> tuple[list[np.ndarray], list[str], float | None]:
-    """Rescale every piece so its staff-line spacing matches a common reference
-    (the MEDIAN measured spacing), so no snippet renders larger than the others
-    just because it was exported at a different DPI.
+    """Rescale every piece so its content WIDTH matches a common reference
+    (the MEDIAN measured width), so pieces captured at different resolutions
+    or with different staff structures (e.g. a piano-only excerpt vs. a
+    piano+vocal system) still stack into pages with visually consistent
+    staff length -- matching how printed/engraved scores keep every system
+    on a page the same width, letting note spacing absorb the difference.
 
-    The median is used so one oddly-scaled outlier can't drag the reference. A
-    piece whose spacing can't be measured (<2 staff lines -- e.g. a chord-only
-    or lyric snippet) is left at native scale and reported. If fewer than 2
-    pieces are measurable there is no reliable reference, so all are left as-is.
+    The median is used so one oddly-scaled outlier (e.g. a title-block page)
+    can't drag the reference. A piece whose width can't be measured (blank --
+    no detectable ink) is left at native scale and reported. If fewer than 2
+    pieces are measurable there is no reliable reference, so all are left
+    as-is.
 
     Returns (possibly-rescaled pieces, human-readable warnings, reference
-    spacing). ``reference_spacing`` is the median measured spacing --
-    ``pack_pages`` uses it to build its height budget -- or None when fewer
-    than 2 pieces were measurable (callers should fall back to count-based
-    ``balance_pages``). Pieces already within SCALE_NOOP_TOLERANCE of the
-    reference are returned unchanged (same object), so an already-consistent
-    set is a true no-op.
+    spacing). ``reference_spacing`` is no longer the controlled quantity
+    (width is) -- it's the median staff-line spacing OBSERVED on the
+    width-rescaled results, a representative sample of this run's note size
+    that ``pack_pages`` uses to build its height budget. It's None when
+    fewer than 2 of the (width-rescaled) pieces have measurable spacing.
+    Pieces already within SCALE_NOOP_TOLERANCE of the width reference are
+    returned unchanged (same object), so an already-consistent set is a true
+    no-op.
     """
-    spacings: list[float | None] = []
+    widths: list[int | None] = []
     warnings: list[str] = []
     for i, piece in enumerate(pieces, start=1):
-        gray = piece[..., :3].mean(axis=2) if piece.ndim == 3 else piece.astype(np.float32)
         try:
-            spacings.append(measure_staff_spacing(gray))
+            widths.append(measure_content_width(piece))
         except ValueError:
-            spacings.append(None)
-            warnings.append(f"piece {i}: staff spacing unmeasurable; left at native scale")
+            widths.append(None)
+            warnings.append(f"piece {i}: content width unmeasurable; left at native scale")
 
-    measured = [s for s in spacings if s is not None]
-    if len(measured) < 2:
+    measured_widths = [w for w in widths if w is not None]
+    if len(measured_widths) < 2:
         return pieces, warnings, None
 
-    reference = float(np.median(measured))
+    reference_width = float(np.median(measured_widths))
     out: list[np.ndarray] = []
-    for i, (piece, spacing) in enumerate(zip(pieces, spacings), start=1):
-        if spacing is None:
+    for i, (piece, width) in enumerate(zip(pieces, widths), start=1):
+        if width is None:
             out.append(piece)
             continue
-        factor = rescale_factor(reference, spacing)
+        factor = rescale_factor(reference_width, width)
         if abs(factor - 1.0) <= SCALE_NOOP_TOLERANCE:
             out.append(piece)
             continue
         out.append(resize_rgb(piece, factor))
-        warnings.append(f"piece {i}: rescaled x{factor:.3f} to match staff spacing")
-    return out, warnings, reference
+        warnings.append(f"piece {i}: rescaled x{factor:.3f} to match staff width")
+
+    spacings: list[float] = []
+    for piece in out:
+        gray = piece[..., :3].mean(axis=2) if piece.ndim == 3 else piece.astype(np.float32)
+        try:
+            spacings.append(measure_staff_spacing(gray))
+        except ValueError:
+            continue
+    reference_spacing = float(np.median(spacings)) if len(spacings) >= 2 else None
+
+    return out, warnings, reference_spacing
 
 
 def _to_ink_mask(arr: np.ndarray) -> np.ndarray:
