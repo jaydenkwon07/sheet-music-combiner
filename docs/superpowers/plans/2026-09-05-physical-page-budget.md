@@ -507,6 +507,28 @@ def test_sparse_page_warning_fires_for_a_genuinely_lopsided_split(tmp_path):
     assert any("sparse" in w and "page 2" in w for w in summary["warnings"])
 ```
 
+**(g)** `test_at_position_uses_height_aware_pre_layout` (AMENDMENT — missed in the original Step 11 list): its current `pad=737` tall pieces (height 900) no longer pack multiple-per-page under the physical budget (each is 1/page), so its `[3,2]` assertion and its "2 per page" premise break. Redesign it to use short (default-height) pieces, which still exercises the point (that `--at-position` maps against the *height-aware* pre-layout, not `balance_pages` — under `balance_pages(5)=[5]` the `page 2` reference would be invalid, but `pack_pages` gives `[3,2]` so `page 2 index 0` → flat index 3). Replace the test body with:
+
+```python
+def test_at_position_uses_height_aware_pre_layout(tmp_path):
+    src = tmp_path / "in"
+    out = tmp_path / "out"
+    src.mkdir()
+    # 5 normal single-staff snippets. The height-aware pre-insert layout packs
+    # them [3, 2] (physical budget), so "--at-position 2:0" maps to flat index
+    # 3 -- the start of page 2. (balance_pages(5) would be a single page [5],
+    # for which "page 2" is out of range, so this genuinely exercises the
+    # height-aware pre-layout path.)
+    _write_pieces(src, "Song", 5, spacing=30)
+    ins = tmp_path / "extra.png"
+    Image.fromarray(_snippet(spacing=30)).save(ins)
+
+    summary = assemble(src, "Song", out, insert=ins, at_position="2:0")
+
+    assert summary["num_pieces"] == 6
+    assert summary["counts"] == [3, 3]  # 6 normal snippets, physical budget
+```
+
 Leave `test_n7_with_no_measurable_reference_still_raises`, `test_n7_with_pages_override_succeeds`, `test_different_width_pieces_normalize_to_matching_width`, `test_identical_inputs_produce_byte_identical_output`, and `test_missing_piece_exits_nonzero` unchanged (they either assert non-count properties, use the override path, or pass explicit widths).
 
 - [ ] **Step 12: Run the full suite**
