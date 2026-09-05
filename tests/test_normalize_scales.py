@@ -12,8 +12,8 @@ looks uniform.
 import numpy as np
 
 from assemble_sheet_music import (
+    WIDTH_RESCALE_MAX_FACTOR,
     measure_content_width,
-    measure_staff_spacing,
     normalize_piece_scales,
 )
 
@@ -41,10 +41,6 @@ def _vertical_bar(width=200, height=120, bar_width=4):
     x0 = width // 2
     img[:, x0 : x0 + bar_width, :] = 0
     return img
-
-
-def _gray(rgb):
-    return rgb[..., :3].mean(axis=2)
 
 
 def test_mismatched_widths_end_at_matching_width():
@@ -111,3 +107,26 @@ def test_reference_spacing_is_none_when_fewer_than_two_rescaled_have_spacing():
     pieces = [_rgb_staff(spacing=30, width=200), _vertical_bar(width=400)]
     _out, _warnings, reference = normalize_piece_scales(pieces)
     assert reference is None
+
+
+def test_degenerate_tiny_width_piece_is_left_at_native_scale_not_ballooned():
+    # A near-blank piece (one dark pixel) has content width 1, which is a valid
+    # but meaningless measurement -- rescaling it to the reference width would
+    # imply a ~reference-x factor and balloon it to an enormous array (a real
+    # OOM risk on the memory-limited web tier, whose guard runs pre-load). It
+    # must instead be left at native scale, like an unmeasurable piece.
+    one_pixel = np.full((60, 40, 3), 255, dtype=np.uint8)
+    one_pixel[30, 20, :] = 0
+    pieces = [
+        _rgb_staff(spacing=30, width=200),
+        _rgb_staff(spacing=30, width=200),
+        one_pixel,
+    ]
+    out, warnings, _reference = normalize_piece_scales(pieces)
+    # The degenerate piece keeps its original tiny shape -- NOT rescaled up.
+    assert out[2].shape == one_pixel.shape
+    assert out[2] is pieces[2]
+    # And the implied out-of-band factor is well above WIDTH_RESCALE_MAX_FACTOR
+    # (reference width ~200 / measured width 1 = ~200), so it's reported.
+    assert 200.0 / 1.0 > WIDTH_RESCALE_MAX_FACTOR
+    assert any("safe band" in w for w in warnings)

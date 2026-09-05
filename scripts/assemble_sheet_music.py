@@ -39,11 +39,19 @@ DARK_CUTOFF = 235
 # A row is a staff line when this fraction of its pixels are ink (full-width
 # horizontal line), distinguishing it from vertical barlines/stubs.
 STAFF_ROW_FRACTION = 0.5
-# When normalizing every piece to a common staff spacing, a rescale within this
+# When normalizing every piece to a common staff width, a rescale within this
 # fraction of 1.0 is skipped -- avoids needlessly resampling (softening) pieces
 # that already match, and keeps an already-consistent set byte-for-byte
 # identical to the pre-normalization output.
 SCALE_NOOP_TOLERANCE = 0.02
+# A width-rescale factor outside this band implies a piece whose measured content
+# width is implausible (a near-blank page measuring a few px, or a corrupt
+# capture) -- applying it would balloon the piece to an enormous array. The web
+# memory guard estimates size from file headers BEFORE load, so it can't see a
+# post-load rescale; such a piece is left at native scale and warned, like an
+# unmeasurable one.
+WIDTH_RESCALE_MIN_FACTOR = 0.2
+WIDTH_RESCALE_MAX_FACTOR = 5.0
 
 # Gap-tolerant grouping of connected ink when finding stray-mark groups.
 GROUP_GAP_PX = 25
@@ -293,6 +301,14 @@ def normalize_piece_scales(
         factor = rescale_factor(reference_width, width)
         if abs(factor - 1.0) <= SCALE_NOOP_TOLERANCE:
             out.append(piece)
+            continue
+        if not (WIDTH_RESCALE_MIN_FACTOR <= factor <= WIDTH_RESCALE_MAX_FACTOR):
+            out.append(piece)
+            warnings.append(
+                f"piece {i}: implied width rescale x{factor:.3f} is outside the "
+                f"[{WIDTH_RESCALE_MIN_FACTOR}, {WIDTH_RESCALE_MAX_FACTOR}] safe band "
+                f"(likely a near-blank or corrupt piece); left at native scale"
+            )
             continue
         out.append(resize_rgb(piece, factor))
         warnings.append(f"piece {i}: rescaled x{factor:.3f} to match staff width")
@@ -806,10 +822,13 @@ def assemble(
                 f"piece {i} ({p.name}): PDF has {n_pages} pages; used page 1 only"
             )
 
-    # Normalize every piece to a common staff spacing before stacking, so a
-    # snippet exported at a different DPI doesn't render at a different note
-    # size than the rest. Done before the insert branch so the inserted piece
-    # (which matches itself to piece_arrays[0]) targets the normalized set.
+    # Normalize every piece to a common staff WIDTH before stacking, so pieces
+    # captured at different resolutions or with different staff structures stack
+    # into pages with consistent staff length (like real engraved sheet music).
+    # Note size is no longer controlled -- reference_spacing here is a derived
+    # OBSERVATION of post-rescale spacing, used only to feed pack_pages's height
+    # budget. Done before the insert branch so the inserted piece (which matches
+    # itself to piece_arrays[0]) targets the normalized set.
     piece_arrays, norm_warnings, reference_spacing = normalize_piece_scales(piece_arrays)
     warnings.extend(norm_warnings)
 
