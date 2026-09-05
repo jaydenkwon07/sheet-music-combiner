@@ -199,3 +199,35 @@ def test_sparse_page_warning_fires_for_a_genuinely_lopsided_split(tmp_path):
 
     assert summary["counts"] == [1, 4]
     assert any("sparse" in w and "page 2" in w for w in summary["warnings"])
+
+
+def test_different_width_pieces_normalize_to_matching_width(tmp_path):
+    src = tmp_path / "in"
+    out = tmp_path / "out"
+    src.mkdir()
+    # Two pieces at very different raw widths (e.g. different screenshot
+    # resolutions or staff structures) should end up with matching staff
+    # width after normalization -- not just matching note size.
+    Image.fromarray(_snippet(width=800)).save(src / "Song_1.png")
+    Image.fromarray(_snippet(width=1600)).save(src / "Song_2.png")
+
+    summary = assemble(src, "Song", out)
+
+    assert summary["pdf"].exists()
+    assert any("to match staff width" in w for w in summary["warnings"])
+
+    # Confirm the widths actually converge: re-run the same normalization
+    # step the pipeline used, directly on the same source files.
+    from assemble_sheet_music import (
+        discover_pieces,
+        load_rgb,
+        measure_content_width,
+        normalize_piece_scales,
+        strip_edge_border_lines,
+    )
+
+    paths = discover_pieces(src, "Song")
+    pieces = [strip_edge_border_lines(load_rgb(p))[0] for p in paths]
+    normalized, _warnings, _reference = normalize_piece_scales(pieces)
+    widths = [measure_content_width(p) for p in normalized]
+    assert abs(widths[0] - widths[1]) <= 2
